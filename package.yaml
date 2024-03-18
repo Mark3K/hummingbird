@@ -21,6 +21,20 @@ description:         Please see the README on GitHub at <https://github.com/gith
 
 dependencies:
 - base >= 4.7 && < 5
+- bytestring
+- containers
+- cereal
+- dns
+- mtl
+- monad-logger
+- network
+- network-simple
+- optparse-applicative
+- stm
+- text
+- time
+- transformers
+- yaml
 
 ghc-options:
 - -Wall
@@ -37,7 +51,7 @@ library:
   source-dirs: src
 
 executables:
-  hummingbird-exe:
+  hummingbird:
     main:                Main.hs
     source-dirs:         app
     ghc-options:
