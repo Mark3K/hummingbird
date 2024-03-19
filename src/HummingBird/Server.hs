@@ -1,31 +1,39 @@
-{-# LANGUAGE DeriveAnyClass             #-}
 {-# LANGUAGE DerivingStrategies         #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE StandaloneDeriving         #-}
-{-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE MultiParamTypeClasses      #-}
+{-# LANGUAGE FlexibleContexts           #-}
+{-# LANGUAGE ScopedTypeVariables        #-}
+{-# LANGUAGE TypeFamilies               #-}
+{-# LANGUAGE UndecidableInstances       #-}
 
 module HummingBird.Server where
 
 import qualified Data.Map as Map
 
-import Control.Concurrent.STM (TVar, newTVarIO, TChan, newTChanIO, atomically, writeTChan)
-import Control.Monad.Reader (ReaderT (runReaderT), MonadIO, MonadReader, asks)
+import Control.Concurrent (forkIO)
+import Control.Concurrent.Lifted (fork)
+import Control.Concurrent.STM (TVar, newTVarIO, TChan, newTChanIO, atomically, writeTChan, readTChan)
+import Control.Exception (Exception)
+import Control.Monad.Base (MonadBase)
 import Control.Monad.Logger (LoggingT (runLoggingT), MonadLogger, defaultOutput)
-import Control.Monad.Logger.CallStack (logInfo, logDebug)
+import Control.Monad.Logger.CallStack (logInfo, logDebug, logError)
+import Control.Monad.Reader (ReaderT (runReaderT), MonadIO (liftIO), MonadReader, asks)
+import Control.Monad.Trans.Control 
 
 import qualified Data.ByteString as BS
 import Data.Maybe (fromMaybe)
-import qualified Data.Serialize as S
 import Data.Text (pack)
 
 import Network.DNS (DNSMessage, Identifier, decode)
-import qualified Network.Simple.TCP as NS
+import Network.Socket (HostName, ServiceName)
 
-import System.IO (stdout, IOMode (AppendMode), hSetBuffering, BufferMode (LineBuffering), withFile)
+import System.IO (stdout, IOMode (AppendMode), hSetBuffering, BufferMode (LineBuffering), withFile, hPutStrLn)
 
 import HummingBird.Config (Config (cfgLogOutput, cfgListenAddrs, cfgListenPorts), LogOutput(..))
 import HummingBird.ServerError (ServerError)
 import HummingBird.Event (Event (MessageEvent))
+import qualified HummingBird.UDP as UDP
 
 
 data ServerEnv = ServerEnv
@@ -36,6 +44,9 @@ data ServerEnv = ServerEnv
 
 newtype Server a = Server { unServer :: ReaderT ServerEnv (LoggingT IO) a }
     deriving newtype (Functor, Applicative, Monad, MonadIO, MonadReader ServerEnv, MonadLogger)
+
+deriving instance MonadBase IO Server
+deriving instance MonadBaseControl IO Server
 
 runServer :: ServerEnv -> Server a -> IO a 
 runServer env server = do
@@ -50,46 +61,29 @@ runServer env server = do
 humming :: Server ()
 humming = do
     logInfo $ pack "start humming bird server"
-    cfg <- asks envConfig
-    logDebug $ pack ("configuration: " <> show cfg)
-    serve
-    pure ()
-
-serve :: Server ()
-serve = do
     addrs   <- asks $ cfgListenAddrs . envConfig
     ports   <- asks $ cfgListenPorts . envConfig
-    echan   <- asks envEventCh
-    mapM_ (serve' echan) [(a, show p) | a <- addrs, p <- ports]
+    ch      <- asks envEventCh
+    _ <- serve addrs ports ch
+    _ <- loop
+    pure ()
     where
-        serve' ch (addr, port) = do
+        loop = do
+            event <- liftIO . atomically . readTChan =<< asks envEventCh
+            logDebug $ pack ("new event: " <> show event)
+            loop
+
+serve :: [HostName] -> [ServiceName] -> TChan Event -> Server ()
+serve addrs ports ch = mapM_ (fork . serve' ch) [(a, p) | a <- addrs, p <- ports]
+    where
+        serve' :: TChan Event -> (HostName, ServiceName) -> Server () 
+        serve' ch' (addr, port) = do
             logInfo $ pack ("serving on " <> addr <> ":" <> port)
-            NS.serve (NS.Host addr) port $ \(sock, remoteAddr) -> do
-                message' <- receive sock
-                case message' of
-                    Nothing  -> error "Failed to receive dns message"
-                    Just msg -> atomically $ writeTChan ch (MessageEvent msg)
-
-instance S.Serialize DNSMessage where
-    get :: S.Get DNSMessage
-    get = undefined
-
-    put :: S.Putter DNSMessage
-    put = undefined
-
-receive :: S.Serialize a => NS.Socket -> IO (Maybe a)
-receive sock = do
-    rv <- go $ S.runGetPartial S.get
-    case rv of
-        S.Fail {}       -> pure Nothing
-        S.Done v _      -> pure $ Just v
-        S.Partial {}    -> pure Nothing
-    where
-        go getPartial = do
-            bytes <- fromMaybe BS.empty <$> NS.recv sock 4096
-            case getPartial bytes of
-                S.Partial next -> go next
-                x              -> pure x
+            UDP.serve addr port 1024 $ \(raw, remoteAddr) -> do
+                putStrLn ("new message from " <> show remoteAddr)
+                case decode raw of
+                    Left  err -> error $ "Failed to receive dns message" <> show err
+                    Right msg -> atomically $ writeTChan ch' (MessageEvent msg)
 
 initializeEnv :: Config -> IO (Either ServerError ServerEnv)
 initializeEnv cfg = do

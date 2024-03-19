@@ -20,20 +20,23 @@ extra-source-files:
 description:         Please see the README on GitHub at <https://github.com/githubuser/hummingbird#readme>
 
 dependencies:
+- async
 - base >= 4.7 && < 5
 - bytestring
 - containers
-- cereal
 - dns
+- lifted-base
+- monad-control
 - mtl
 - monad-logger
 - network
-- network-simple
 - optparse-applicative
+- random
 - stm
 - text
 - time
 - transformers
+- transformers-base
 - yaml
 
 ghc-options:

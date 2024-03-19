@@ -16,13 +16,13 @@ data Config = Config
     { cfgLogLevel       :: LogLevel
     , cfgLogOutput      :: LogOutput
     , cfgListenAddrs    :: [String]
-    , cfgListenPorts    :: [Int16]
+    , cfgListenPorts    :: [String]
     } deriving (Show)
 
 defaultConfig :: Config
 defaultConfig = Config 
     { cfgLogLevel       = LevelInfo
     , cfgLogOutput      = Stdout
-    , cfgListenAddrs    = ["0.0.0.0"]
-    , cfgListenPorts    = [53]
+    , cfgListenAddrs    = ["127.0.0.1"]
+    , cfgListenPorts    = ["domain"]
     }

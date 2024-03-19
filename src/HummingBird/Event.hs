@@ -9,6 +9,7 @@ import Network.DNS (DNSMessage)
 data Event 
     = MessageEvent DNSMessage
     | TimeoutEvent SystemTime Timeout
+    deriving (Show)
 
 data Timeout
     = QueriesTimeout

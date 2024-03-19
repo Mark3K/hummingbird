@@ -30,20 +30,25 @@ verboseToLogLevel 2 = Just LevelInfo
 verboseToLogLevel 3 = Just LevelDebug
 verboseToLogLevel _ = Nothing
 
-buildConfig :: Params -> Config
-buildConfig Params{..} = defaultConfig
-    { cfgLogLevel   = fromMaybe (cfgLogLevel defaultConfig) (verboseToLogLevel verbose)
-    , cfgLogOutput  = if logFile /= "" then FileOutput logFile else Stdout 
-    }
+buildConfig :: Params -> IO Config
+buildConfig Params{..} = do
+    cfg <- loadConfig configPath
+    -- TODO: merge defaultConfig with config from file
+    pure defaultConfig
+        { cfgLogLevel   = fromMaybe (cfgLogLevel defaultConfig) (verboseToLogLevel verbose)
+        , cfgLogOutput  = if logFile /= "" then FileOutput logFile else Stdout 
+        }
+
+loadConfig :: FilePath -> IO Config
+loadConfig fp = pure defaultConfig
 
 run :: Params -> IO ()
 run params = do
+    cfg  <- buildConfig params
     env' <- initializeEnv cfg
     case env' of
         Left  err -> error $ show err
         Right env -> runServer env humming
-    where
-        cfg = buildConfig params
 
 main :: IO ()
 main = run =<< execParser opts
