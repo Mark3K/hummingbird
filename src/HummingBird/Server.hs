@@ -7,7 +7,10 @@
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE UndecidableInstances       #-}
 
-module HummingBird.Server where
+module HummingBird.Server 
+    ( runServer
+    , runServerT
+    ) where
 
 import qualified Data.Map as Map
 
@@ -15,22 +18,22 @@ import Control.Concurrent.Lifted (fork)
 import Control.Concurrent.STM (TVar, newTVarIO, TChan, newTChanIO, atomically, writeTChan, readTChan)
 import Control.Exception (SomeException)
 import Control.Monad.Base (MonadBase)
-import Control.Monad.Logger (LoggingT (runLoggingT), MonadLogger, defaultOutput)
+import Control.Monad.Logger (MonadLogger)
 import Control.Monad.Logger.CallStack (logInfo, logDebug, logError)
 import Control.Monad.Reader (ReaderT (runReaderT), MonadIO (liftIO), MonadReader, asks)
 import Control.Monad.Trans.Control 
+import Control.Monad.Trans.Class
 
 import Data.Text (pack)
 
-import Network.DNS (DNSMessage, Identifier, decode)
+import Network.DNS
 import Network.Socket (HostName, ServiceName)
 
-import System.IO (stdout, IOMode (AppendMode), hSetBuffering, BufferMode (LineBuffering), withFile)
-
-import HummingBird.Config (Config (cfgLogOutput, cfgListenAddrs, cfgListenPorts), LogOutput(..))
+import HummingBird.Config (Config (cfgListenAddrs, cfgListenPorts))
 import HummingBird.ServerError (ServerError)
 import HummingBird.Event (Event (MessageEvent, ListenerExit, TimeoutEvent))
 import qualified HummingBird.UDP as UDP
+import HummingBird.Upstream (Upstream (proxy))
 
 
 data ServerEnv = ServerEnv
@@ -45,50 +48,66 @@ newtype ServerT m a = ServerT { unServerT :: ReaderT ServerEnv m a }
 deriving instance (MonadBase IO m) => MonadBase IO (ServerT m)
 deriving instance (MonadBaseControl IO m) => MonadBaseControl IO (ServerT m)
 
-newtype Server a = Server { unServer :: ServerT (LoggingT IO) a }
+instance MonadTrans ServerT where
+    lift = ServerT . lift
 
 runServerT :: ServerEnv -> ServerT m a -> m a 
 runServerT env s = runReaderT (unServerT s) env
 
-run :: ServerEnv -> IO () 
-run env = do
-    case cfgLogOutput c of
-        FileOutput fp -> withFile fp AppendMode $ \h -> 
-            hSetBuffering h LineBuffering >> runLoggingT m (defaultOutput h)
-        Stdout        -> runLoggingT m (defaultOutput stdout)
-    where
-        c = envConfig env
-        m = runReaderT (unServerT humming) env
-
-humming :: (MonadIO m, MonadLogger m, MonadBaseControl IO m) => ServerT m ()
-humming = do
+runServer :: 
+    ( MonadIO m
+    , MonadLogger m
+    , MonadBaseControl IO m
+    , Upstream m
+    )
+    => Config
+    -> m ()
+runServer cfg = do
     logInfo $ pack "start humming bird server"
-    addrs   <- asks $ cfgListenAddrs . envConfig
-    ports   <- asks $ cfgListenPorts . envConfig
-    ch      <- asks envEventCh
-    _ <- serve addrs ports ch
-    _ <- loop
-    pure ()
+    env' <- liftIO $ initializeEnv cfg
+    case env' of
+        Left    e -> do
+            logError $ pack ("error initialize server env: " <> show e)
+            pure ()
+        Right env -> do
+            _ <- serve (addrs env) (ports env) (envEventCh env)
+            runServerT env runEventLoop
     where
-        loop = do
-            event <- liftIO . atomically . readTChan =<< asks envEventCh
-            case event of
-                MessageEvent message -> do
-                    logDebug $ pack ("[Event] message: " <> show message)
+        addrs env   = cfgListenAddrs $ envConfig env
+        ports env   = cfgListenPorts $ envConfig env
 
-                TimeoutEvent systime timeout -> do
-                    logDebug $ pack ("[Event] timeout at " <> show systime <> ": " <> show timeout)
+runEventLoop :: 
+    ( MonadIO m
+    , MonadLogger m
+    , Upstream m
+    )
+    => ServerT m ()
+runEventLoop = do
+    event <- liftIO . atomically . readTChan =<< asks envEventCh
+    case event of
+        MessageEvent message -> do
+            logDebug $ pack ("[Event] message: " <> show message)
+            response <- lift $ proxy message
+            logDebug $ pack ("response: " <> show response)
 
-                ListenerExit reason -> case reason of
-                    Just  e -> do
-                        logError $ pack ("Listener exited unexpected: " <> show e)
-                        pure ()
-                    Nothing -> do
-                        logDebug $ pack "Listener exited normally"
-                        pure ()
-            loop
+        TimeoutEvent systime timeout -> do
+            logDebug $ pack ("[Event] timeout at " <> show systime <> ": " <> show timeout)
 
-serve :: (MonadIO m, MonadLogger m, MonadBaseControl IO m) => [HostName] -> [ServiceName] -> TChan Event -> ServerT m ()
+        ListenerExit reason -> case reason of
+            Just  e -> do
+                logError $ pack ("Listener exited unexpected: " <> show e)
+                pure ()
+            Nothing -> do
+                logDebug $ pack "Listener exited normally"
+                pure ()
+    -- continue the Loop
+    runEventLoop   
+
+serve :: (MonadIO m, MonadLogger m, MonadBaseControl IO m) 
+      => [HostName] 
+      -> [ServiceName] 
+      -> TChan Event 
+      -> m ()
 serve addrs ports ch = mapM_ (fork . serve') [(a, p) | a <- addrs, p <- ports]
     where
         serve' (addr, port) = do

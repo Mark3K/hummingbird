@@ -33,6 +33,7 @@ library
       HummingBird.Timer
       HummingBird.UDP
       HummingBird.Upstream
+      HummingBird.Upstream.UDP
   other-modules:
       Paths_hummingbird
   autogen-modules:

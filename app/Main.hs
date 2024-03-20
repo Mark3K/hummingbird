@@ -3,9 +3,11 @@
 
 module Main (main) where
 
-import Control.Monad.Logger (LogLevel(..))
+import Control.Monad.Logger (LogLevel(..), LoggingT (runLoggingT), defaultOutput)
 import Data.Maybe (fromMaybe)
 import Options.Applicative
+
+import System.IO (withFile, IOMode (AppendMode), hSetBuffering, BufferMode (LineBuffering), stdout)
 
 import HummingBird
 
@@ -42,16 +44,23 @@ buildConfig Params{..} = do
 loadConfig :: FilePath -> IO Config
 loadConfig fp = pure defaultConfig
 
-go :: Params -> IO ()
-go params = do
+run :: Params -> IO ()
+run params = do
     cfg  <- buildConfig params
-    env' <- initializeEnv cfg
-    case env' of
-        Left  err -> error $ show err
-        Right env -> run env
+    case cfgLogOutput cfg of
+        FileOutput fp -> withFile fp AppendMode $ \h -> 
+            hSetBuffering h LineBuffering >> runLoggingT (runUdpStreamT upstreamContext (runServer cfg)) (defaultOutput h)
+        Stdout        -> runLoggingT (runUdpStreamT upstreamContext (runServer cfg)) (defaultOutput stdout)
+
+    where
+        upstreamContext = UdpUpstreamContext 
+            { udpUpstreamContextHostName    = "114.114.114.114" 
+            , udpUpstreamContextServiceName = "domain"
+            , udpUpstreamContextTimeout     = 3000 
+            }
 
 main :: IO ()
-main = go =<< execParser opts
+main = run =<< execParser opts
     where
         opts = info (params <**> helper)
                     (  fullDesc 
