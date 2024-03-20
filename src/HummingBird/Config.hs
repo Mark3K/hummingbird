@@ -5,8 +5,6 @@ module HummingBird.Config
     ) where
 
 import Control.Monad.Logger (LogLevel(..))
-import Data.Int (Int16)
-
 
 data LogOutput = FileOutput FilePath
                | Stdout

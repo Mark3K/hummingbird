@@ -34,7 +34,7 @@ buildConfig :: Params -> IO Config
 buildConfig Params{..} = do
     cfg <- loadConfig configPath
     -- TODO: merge defaultConfig with config from file
-    pure defaultConfig
+    pure cfg
         { cfgLogLevel   = fromMaybe (cfgLogLevel defaultConfig) (verboseToLogLevel verbose)
         , cfgLogOutput  = if logFile /= "" then FileOutput logFile else Stdout 
         }
@@ -42,16 +42,16 @@ buildConfig Params{..} = do
 loadConfig :: FilePath -> IO Config
 loadConfig fp = pure defaultConfig
 
-run :: Params -> IO ()
-run params = do
+go :: Params -> IO ()
+go params = do
     cfg  <- buildConfig params
     env' <- initializeEnv cfg
     case env' of
         Left  err -> error $ show err
-        Right env -> runServer env humming
+        Right env -> run env
 
 main :: IO ()
-main = run =<< execParser opts
+main = go =<< execParser opts
     where
         opts = info (params <**> helper)
                     (  fullDesc 

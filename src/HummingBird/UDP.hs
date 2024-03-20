@@ -7,7 +7,7 @@ module HummingBird.UDP
     , serve
     ) where
 
-import Control.Exception (catch, SomeException, bracketOnError)
+import Control.Exception (catch, SomeException, bracketOnError, Exception, try)
 import Control.Monad (forever, void)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.Logger (MonadLogger)
@@ -20,12 +20,24 @@ import Network.Socket
 import Network.Socket.Address (recvFrom)
 import System.IO (hPutStrLn, stderr)
 
-serve :: (MonadIO m, MonadLogger m) => HostName -> ServiceName -> Int -> ((ByteString, SockAddr) -> IO ()) -> m a 
+serve :: (MonadIO m, MonadLogger m, Exception e) 
+      => HostName 
+      -> ServiceName 
+      -> Int 
+      -> ((ByteString, SockAddr) -> IO ()) 
+      -> m (Either e a)
 serve host port bufsize k = do
-    (sock, addr) <- liftIO $ bindSock host port
-    logDebug $ pack ("UDP.serve bind socket to " <> show addr)
-    forever $ liftIO $ catch (void (process sock bufsize)) (\se -> hPutStrLn stderr (err <> show (se :: SomeException)))
-    where 
+    bindv <- liftIO $ try $ bindSock host port
+    case bindv of
+        Left             e -> do
+            logError $ pack ("error binding to " <> host <> ":" <> port <> ": " <> show e)
+            pure $ Left e
+        Right (sock, addr) -> do
+            logDebug $ pack ("UDP.serve socket bound to " <> show addr)
+            forever $ liftIO $ catch 
+                (void (process sock bufsize)) 
+                (\se -> hPutStrLn stderr (err <> show (se :: SomeException)))
+    where
         process sock bs = k =<< recvFrom sock bs
         err = "UDP.serve: Exception processing: "
 
@@ -35,7 +47,10 @@ bindSock host port = liftIO $ do
     tryAddrs addrs
     where
         hints :: AddrInfo
-        hints = defaultHints { addrFlags = [AI_PASSIVE], addrSocketType = Datagram }
+        hints = defaultHints 
+            { addrFlags = [AI_PASSIVE]
+            , addrSocketType = Datagram 
+            }
 
         tryAddrs :: [AddrInfo] -> IO (Socket, SockAddr)
         tryAddrs = \case

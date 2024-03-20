@@ -9,6 +9,7 @@ import Network.DNS (DNSMessage)
 data Event 
     = MessageEvent DNSMessage
     | TimeoutEvent SystemTime Timeout
+    | ListenerExit (Maybe String)
     deriving (Show)
 
 data Timeout
