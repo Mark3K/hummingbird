@@ -4,10 +4,11 @@ module HummingBird.Event
     ) where
 
 import Data.Time.Clock.System (SystemTime)
-import Network.DNS (DNSMessage)
+
+import HummingBird.Types (RequestContext)
 
 data Event 
-    = MessageEvent DNSMessage
+    = RequestEvent RequestContext
     | TimeoutEvent SystemTime Timeout
     | ListenerExit (Maybe String)
     deriving (Show)

@@ -45,18 +45,24 @@ loadConfig :: FilePath -> IO Config
 loadConfig fp = pure defaultConfig
 
 run :: Params -> IO ()
-run params = do
-    cfg  <- buildConfig params
+run vars = do
+    cfg  <- buildConfig vars
     case cfgLogOutput cfg of
         FileOutput fp -> withFile fp AppendMode $ \h -> 
-            hSetBuffering h LineBuffering >> runLoggingT (runUdpStreamT upstreamContext (runServer cfg)) (defaultOutput h)
-        Stdout        -> runLoggingT (runUdpStreamT upstreamContext (runServer cfg)) (defaultOutput stdout)
+            hSetBuffering h LineBuffering >> runLoggingT (runUdpDownstreamT downstreamContext (runUdpUpstreamT upstreamContext (runServer cfg))) (defaultOutput h)
+        Stdout        -> runLoggingT (runUdpDownstreamT downstreamContext (runUdpUpstreamT upstreamContext (runServer cfg))) (defaultOutput stdout)
 
     where
         upstreamContext = UdpUpstreamContext 
             { udpUpstreamContextHostName    = "114.114.114.114" 
             , udpUpstreamContextServiceName = "domain"
             , udpUpstreamContextTimeout     = 3000 
+            }
+
+        downstreamContext = UdpDownstreamContext
+            { udpDownstreamContextHostName      = "127.0.0.1"
+            , udpDownstreamContextServiceName   = "domain"
+            , udpDownstreamContextBufferSize    = 1024
             }
 
 main :: IO ()

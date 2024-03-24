@@ -16,7 +16,6 @@ import qualified Data.Map as Map
 
 import Control.Concurrent.Lifted (fork)
 import Control.Concurrent.STM (TVar, newTVarIO, TChan, newTChanIO, atomically, writeTChan, readTChan)
-import Control.Exception (SomeException)
 import Control.Monad.Base (MonadBase)
 import Control.Monad.Logger (MonadLogger)
 import Control.Monad.Logger.CallStack (logInfo, logDebug, logError)
@@ -27,13 +26,13 @@ import Control.Monad.Trans.Class
 import Data.Text (pack)
 
 import Network.DNS
-import Network.Socket (HostName, ServiceName)
 
-import HummingBird.Config (Config (cfgListenAddrs, cfgListenPorts))
-import HummingBird.ServerError (ServerError)
-import HummingBird.Event (Event (MessageEvent, ListenerExit, TimeoutEvent))
-import qualified HummingBird.UDP as UDP
-import HummingBird.Upstream (Upstream (proxy))
+import HummingBird.Config
+import HummingBird.Downstream 
+import HummingBird.Event 
+import HummingBird.ServerError 
+import HummingBird.Types 
+import HummingBird.Upstream 
 
 
 data ServerEnv = ServerEnv
@@ -58,7 +57,7 @@ runServer ::
     ( MonadIO m
     , MonadLogger m
     , MonadBaseControl IO m
-    , Upstream m
+    , Upstream m, Downstream m
     )
     => Config
     -> m ()
@@ -70,13 +69,14 @@ runServer cfg = do
             logError $ pack ("error initialize server env: " <> show e)
             pure ()
         Right env -> do
-            _ <- serve (addrs env) (ports env) (envEventCh env)
+            _ <- fork $ do
+                rv <- listen (envEventCh env)
+                case rv of
+                    Left  e -> logError $ pack ("listener exited unexpected: " <> show e)
+                    Right _ -> logInfo $ pack "listener exited normally"
             runServerT env runEventLoop
-    where
-        addrs env   = cfgListenAddrs $ envConfig env
-        ports env   = cfgListenPorts $ envConfig env
 
-runEventLoop :: 
+runEventLoop ::
     ( MonadIO m
     , MonadLogger m
     , Upstream m
@@ -85,10 +85,16 @@ runEventLoop ::
 runEventLoop = do
     event <- liftIO . atomically . readTChan =<< asks envEventCh
     case event of
-        MessageEvent message -> do
-            logDebug $ pack ("[Event] message: " <> show message)
-            response <- lift $ proxy message
-            logDebug $ pack ("response: " <> show response)
+        RequestEvent ctx -> do
+            logDebug $ pack ("[Event] message: " <> show (requestContextMessage ctx))
+            response <- lift $ proxy (requestContextMessage ctx)
+            case response of
+                Left  err -> do
+                    logError $ pack ("error proxy message to upstream " <> show err)
+
+                Right msg -> do
+                    logDebug $ pack ("response message: " <> show msg)
+                    liftIO $ atomically $ writeTChan (requestContextChannel ctx) (ResponseContext msg (requestContextAddr ctx))
 
         TimeoutEvent systime timeout -> do
             logDebug $ pack ("[Event] timeout at " <> show systime <> ": " <> show timeout)
@@ -100,28 +106,8 @@ runEventLoop = do
             Nothing -> do
                 logDebug $ pack "Listener exited normally"
                 pure ()
-    -- continue the Loop
-    runEventLoop   
-
-serve :: (MonadIO m, MonadLogger m, MonadBaseControl IO m) 
-      => [HostName] 
-      -> [ServiceName] 
-      -> TChan Event 
-      -> m ()
-serve addrs ports ch = mapM_ (fork . serve') [(a, p) | a <- addrs, p <- ports]
-    where
-        serve' (addr, port) = do
-            logInfo $ pack ("serving on " <> addr <> ":" <> port)
-            rv <- UDP.serve addr port 1024 handler
-            case rv of
-                Left (e :: SomeException) -> liftIO $ atomically $ writeTChan ch (ListenerExit (Just $ show e))
-                Right _ -> liftIO $ atomically $ writeTChan ch (ListenerExit Nothing)
-
-        handler (raw, remoteAddr) = do
-            putStrLn ("new message from " <> show remoteAddr)
-            case decode raw of
-                Left  err -> error $ "Failed to receive dns message" <> show err
-                Right msg -> atomically $ writeTChan ch (MessageEvent msg)
+    -- Continue
+    runEventLoop
 
 initializeEnv :: Config -> IO (Either ServerError ServerEnv)
 initializeEnv cfg = do

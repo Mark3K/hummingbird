@@ -27,11 +27,13 @@ library
   exposed-modules:
       HummingBird
       HummingBird.Config
+      HummingBird.Downstream
+      HummingBird.Downstream.UDP
       HummingBird.Event
       HummingBird.Server
       HummingBird.ServerError
       HummingBird.Timer
-      HummingBird.UDP
+      HummingBird.Types
       HummingBird.Upstream
       HummingBird.Upstream.UDP
   other-modules:
