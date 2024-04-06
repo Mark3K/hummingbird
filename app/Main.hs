@@ -1,10 +1,14 @@
-{-# LANGUAGE DataKinds          #-}
-{-# LANGUAGE RecordWildCards    #-}
+{-# LANGUAGE RecordWildCards #-}
 
 module Main (main) where
 
+import Control.Lens ((.~), (^.))
+import Control.Monad.Except (ExceptT,runExceptT)
+import Control.Monad.Reader (ReaderT,runReaderT)
 import Control.Monad.Logger (LogLevel(..), LoggingT (runLoggingT), defaultOutput)
+
 import Data.Maybe (fromMaybe)
+
 import Options.Applicative
 
 import System.IO (withFile, IOMode (AppendMode), hSetBuffering, BufferMode (LineBuffering), stdout)
@@ -35,35 +39,37 @@ verboseToLogLevel _ = Nothing
 buildConfig :: Params -> IO Config
 buildConfig Params{..} = do
     cfg <- loadConfig configPath
-    -- TODO: merge defaultConfig with config from file
-    pure cfg
-        { cfgLogLevel   = fromMaybe (cfgLogLevel defaultConfig) (verboseToLogLevel verbose)
-        , cfgLogOutput  = if logFile /= "" then FileOutput logFile else Stdout 
-        }
+    pure $ cfgLogLevel .~ logLevel cfg
+         $ cfgLogOutput .~ logOutput 
+         $ cfg
+    where
+        logLevel cfg    = fromMaybe (cfg ^. cfgLogLevel) (verboseToLogLevel verbose)
+        logOutput       = if logFile /= "" then FileOutput logFile else Stdout
 
 loadConfig :: FilePath -> IO Config
-loadConfig fp = pure defaultConfig
+loadConfig path = pure defaultConfig
 
 run :: Params -> IO ()
 run vars = do
-    cfg  <- buildConfig vars
-    case cfgLogOutput cfg of
+    rv <- run' vars
+    case rv of
+        Left e  -> putStrLn ("AppError: " <> show e)
+        Right _ -> pure ()
+
+run' :: Params -> IO (Either AppError ())
+run' vars = do
+    cfg <- buildConfig vars
+    env <- (appEnvConfig .~ cfg) <$> defaultAppEnv
+    case env ^. appEnvConfig . cfgLogOutput of
         FileOutput fp -> withFile fp AppendMode $ \h -> 
-            hSetBuffering h LineBuffering >> runLoggingT (runUdpDownstreamT downstreamContext (runUdpUpstreamT upstreamContext (runServer cfg))) (defaultOutput h)
-        Stdout        -> runLoggingT (runUdpDownstreamT downstreamContext (runUdpUpstreamT upstreamContext (runServer cfg))) (defaultOutput stdout)
+            hSetBuffering h LineBuffering >> runLoggingT (runApp env app) (defaultOutput h)
+        Stdout        -> runLoggingT (runApp env app) (defaultOutput stdout)
 
     where
-        upstreamContext = UdpUpstreamContext 
-            { udpUpstreamContextHostName    = "114.114.114.114" 
-            , udpUpstreamContextServiceName = "domain"
-            , udpUpstreamContextTimeout     = 3000 
-            }
-
-        downstreamContext = UdpDownstreamContext
-            { udpDownstreamContextHostName      = "127.0.0.1"
-            , udpDownstreamContextServiceName   = "domain"
-            , udpDownstreamContextBufferSize    = 1024
-            }
+        runApp  :: AppEnv 
+                -> ExceptT AppError (ReaderT AppEnv (LoggingT IO)) a 
+                -> LoggingT IO (Either AppError a)
+        runApp env = flip runReaderT env . runExceptT
 
 main :: IO ()
 main = run =<< execParser opts

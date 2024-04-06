@@ -1,12 +1,29 @@
-{-# LANGUAGE FlexibleContexts   #-}
-{-# LANGUAGE TypeFamilies       #-}
+{-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE TemplateHaskell #-}
 
-module HummingBird.Upstream ( Upstream (..)) where
+module HummingBird.Upstream where
+import Control.Lens (makeClassyPrisms, makeClassy)
+import Control.Monad.Error.Class (MonadError)
+import Control.Monad.IO.Class (MonadIO)
+import Control.Monad.Reader (MonadReader)
 
-import Control.Exception (Exception)
+data UpstreamError
+    = UpstreamAError String
+    | UpstreamBError String
+    deriving (Show, Eq)
+makeClassyPrisms ''UpstreamError
 
-import Network.DNS (DNSMessage)
+data UpstreamEnv = UpstreamEnv
+    { _upstreamEnvA     :: Int
+    , _upstreamEnvB     :: Int
+    } deriving(Show, Eq)
+makeClassy ''UpstreamEnv
 
-class (Monad m, Exception (UpstreamException m)) => Upstream m where
-    type UpstreamException m
-    proxy :: DNSMessage -> m (Either (UpstreamException m) DNSMessage)
+type UpstreamProvision c e m = 
+    ( MonadIO m
+    , MonadReader c m, HasUpstreamEnv c
+    , MonadError e m, AsUpstreamError e
+    )
+
+run :: UpstreamProvision c e m => m ()
+run = undefined
