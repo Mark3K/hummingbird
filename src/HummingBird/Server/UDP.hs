@@ -22,7 +22,7 @@ import Control.Monad.Trans.Control (MonadBaseControl)
 
 import Data.Text (pack)
 
-import Network.DNS (decode, encode, maxUdpSize)
+import qualified Network.DNS as DNS
 import Network.Socket
 import Network.Socket.ByteString (recvFrom, sendAllTo)
 
@@ -31,7 +31,7 @@ import HummingBird.Types
 
 data UdpServerError 
     = NoAddrAvailable (HostName, ServiceName)
-    | SocketError String
+    | UdpSocketError String
     deriving (Show, Eq)
 makeClassyPrisms ''UdpServerError
 
@@ -57,27 +57,34 @@ serve ch = do
     (sock, addr) <- bindSock host port
     logDebug $ pack ("UDP listen at " <> show addr)
 
-    sch <- liftIO newTChanIO
-    _ <- fork (forever $ sender sock sch)
-    forever $ catch (process sock sch) 
+    respCh <- liftIO newTChanIO
+    _ <- fork (forever $ sender sock respCh)
+    forever $ catch (process sock respCh) 
                     (\(se :: SomeException) -> do
-                        logError $ pack ("error process packet: " <> show se)
-                        pure ())
+                        logError $ pack ("unexpected error: " <> show se)
+                        throwError (_UdpSocketError # show se)
+                        )
     where
         process sock sch = do
-            (raw, addr) <- liftIO $ recvFrom sock (fromIntegral maxUdpSize)
-            logDebug $ pack ("new message from UDP server: " <> show addr)
-            case decode raw of
+            (raw, addr) <- liftIO $ recvFrom sock (fromIntegral DNS.maxUdpSize)
+            logDebug $ pack ("raw message received: " <> show addr)
+            case parse raw of
                 Left  err -> do
-                    logError $ pack ("error decoding dns message: " <> show err)
+                    logError $ pack ("dns error: " <> show err)
                 Right msg -> do
-                    logDebug $ pack ("decoded message: " <> show msg)
+                    logDebug $ pack ("dns message: " <> show msg)
                     liftIO $ atomically $ writeTChan ch (RequestEvent $ RequestContext msg addr sch)
             
         sender sock sch = do
             ctx <- liftIO $ atomically $ readTChan sch
-            logDebug $ pack ("UDP.downstream received response: " <> show ctx)
-            liftIO $ sendAllTo sock (encode $ responseContextMessage ctx) (responseContextAddr ctx)
+            logDebug $ pack ("UDP server response: " <> show ctx)
+            liftIO $ sendAllTo sock (DNS.encode $ responseContextMessage ctx) (responseContextAddr ctx)
+
+        parse raw = do
+            m <- DNS.decode raw
+            if DNS.qOrR  (DNS.flags $ DNS.header m) == DNS.QR_Query
+                then pure m
+                else Left DNS.FormatError
 
 bindSock :: UdpServerProvision c e m => HostName -> ServiceName -> m (Socket, SockAddr)
 bindSock host port = do

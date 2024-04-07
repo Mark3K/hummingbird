@@ -48,6 +48,7 @@ library
     , bytestring
     , containers
     , dns
+    , iproute
     , lens
     , lifted-base
     , monad-control
@@ -80,6 +81,7 @@ executable hummingbird
     , containers
     , dns
     , hummingbird
+    , iproute
     , lens
     , lifted-base
     , monad-control
@@ -113,6 +115,7 @@ test-suite hummingbird-test
     , containers
     , dns
     , hummingbird
+    , iproute
     , lens
     , lifted-base
     , monad-control

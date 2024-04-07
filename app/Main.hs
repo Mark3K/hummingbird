@@ -8,16 +8,20 @@ import Control.Monad.Reader (ReaderT,runReaderT)
 import Control.Monad.Logger (LogLevel(..), LoggingT (runLoggingT), defaultOutput)
 
 import Data.Maybe (fromMaybe)
+import Data.IP (IP)
+
+import Network.Socket (PortNumber)
 
 import Options.Applicative
-
 import System.IO (withFile, IOMode (AppendMode), hSetBuffering, BufferMode (LineBuffering), stdout)
+import Text.Read (readEither)
 
 import HummingBird
 
 data Params = Params
     { configPath    :: String
     , logFile       :: String
+    , upstreams     :: [(IP, Maybe PortNumber)]
     , verbose       :: Int
     , version       :: Bool
     } deriving (Show)
@@ -26,8 +30,38 @@ params :: Parser Params
 params = Params 
     <$> strOption (long "config-path" <> metavar "<PATH>" <> help "The configuration file path" <> showDefault <> value "")
     <*> strOption (long "log-file" <> metavar "<PATH>" <> help "The log file path" <> showDefault <> value "")
+    <*> upstreamsParser
     <*> (length <$> many (flag' () (short 'v' <> help "verborsity")))
     <*> switch (long "version" <> help "Show the program verion")
+
+upstreamsParser :: Parser [(IP, Maybe PortNumber)]
+upstreamsParser = many $ upstreamOption 
+    (  short 'u' 
+    <> long "up-stream" 
+    <> metavar "<UPSTREAM>" 
+    <> help "An upstream to be used (can be specified multiple times)"
+    )
+
+
+upstreamOption :: Mod OptionFields (IP, Maybe PortNumber) -> Parser (IP, Maybe PortNumber)
+upstreamOption = option $ eitherReader $ \s -> case split ':' s of
+    [x]     -> case readEither x of
+        Left  _ -> Left "Invalid IP Address"
+        Right v -> pure (v, Nothing)
+
+    [x,y]   -> case readEither x of
+        Left   _ -> Left "Invalid IP Address"
+        Right v0 -> case readEither y of
+            Left   _ -> Left "Invalid Port Number"
+            Right v1 -> pure (v0, v1)
+
+    _       -> Left "Upstream should be (ip | ip:port)"
+
+    where
+        split :: Char -> String -> [String]
+        split sep xs = case break (==sep) xs of
+            (s, "")     -> [s]
+            (s, _:rs)   -> s : split sep rs
 
 verboseToLogLevel :: Int -> Maybe LogLevel
 verboseToLogLevel 0 = Just LevelError
@@ -39,8 +73,9 @@ verboseToLogLevel _ = Nothing
 buildConfig :: Params -> IO Config
 buildConfig Params{..} = do
     cfg <- loadConfig configPath
-    pure $ cfgLogLevel .~ logLevel cfg
+    pure $ cfgLogLevel  .~ logLevel cfg
          $ cfgLogOutput .~ logOutput 
+         $ cfgUpstreams .~ upstreams
          $ cfg
     where
         logLevel cfg    = fromMaybe (cfg ^. cfgLogLevel) (verboseToLogLevel verbose)

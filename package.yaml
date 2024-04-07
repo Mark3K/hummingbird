@@ -39,6 +39,7 @@ dependencies:
 - transformers-base
 - yaml
 - lens
+- iproute
 
 ghc-options:
 - -Wall

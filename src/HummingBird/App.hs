@@ -10,6 +10,7 @@
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE UndecidableInstances       #-}
+{-# LANGUAGE RecordWildCards            #-}
 
 module HummingBird.App 
     ( app
@@ -19,31 +20,46 @@ module HummingBird.App
     , appEnvConfig
     ) where
 
-import qualified Data.Map as Map
+import Control.Concurrent.Lifted (fork)
+import Control.Concurrent.STM (newTChanIO, TChan, atomically, readTChan, writeTChan)
+import Control.Lens (makeClassy, makeClassyPrisms, view, (^.), (#))
+import Control.Monad (forever)
+import Control.Monad.Logger.CallStack (logInfo, logDebug)
+import Control.Monad.Reader (MonadIO (liftIO), MonadReader)
 
-import Control.Concurrent.STM (TVar, TChan, newTVarIO, newTChanIO)
-import Control.Lens (makeClassy, makeClassyPrisms, (^.), view)
-import Control.Monad.Logger.CallStack (logDebug)
-import Control.Monad.Reader (MonadIO (liftIO))
+import Data.IORef (IORef, newIORef, atomicModifyIORef')
+import Data.Text (pack)
 
-import Network.DNS
+import qualified Network.DNS as DNS
 
 import HummingBird.Config
 import HummingBird.Event
+import HummingBird.Upstream
 import HummingBird.Server
+import HummingBird.Types
+import Control.Monad.Except (MonadError(throwError))
 
 data AppError 
     = AppServerError ServerError
-    | AppOtherError String
+    | AppDNSError DNS.DNSError
+    | AppUpstreamError UpstreamError
+    | AppInvalidConfigError String
     deriving (Show, Eq)
 makeClassyPrisms ''AppError
 
-data AppEnv = AppEnv
-    { _appEnvConfig     :: Config
-    , _appEnvQueries    :: TVar (Map.Map Identifier DNSMessage)
-    , _appEnvEventCh    :: TChan Event
+data AppEnv = AppEnv 
+    { _appEnvConfig         :: Config 
+    , _appEnvResolvers      :: IORef [DNS.Resolver]
     }
 makeClassy ''AppEnv
+
+defaultAppEnv :: (MonadIO m) => m AppEnv
+defaultAppEnv = do
+    resolvers <- liftIO $ newIORef mempty
+    pure AppEnv 
+        { _appEnvConfig     = defaultConfig 
+        , _appEnvResolvers  = resolvers
+        }
 
 instance HasServerEnv AppEnv where
     serverEnv f ev = ev <$ f ev'
@@ -57,7 +73,14 @@ instance HasServerEnv AppEnv where
 instance AsServerError AppError where
     _ServerError = _AppServerError . _ServerError
 
-type AppProvision c e m = (HasAppEnv c, AsAppError e, ServerProvision c e m)
+instance HasUpstreamEnv AppEnv where
+    upstreamEnv f ev = ev <$ f ev'
+        where ev' = UpstreamEnv { _upstreamResolvers = ev ^. appEnvResolvers }
+
+instance AsUpstreamError AppError where
+    _UpstreamError = _AppUpstreamError . _UpstreamError
+
+type AppProvision c e m = (HasAppEnv c, AsAppError e, ServerProvision c e m, UpstreamProvision c e m)
 
 -- | TODO
 -- 1, start server
@@ -65,16 +88,57 @@ type AppProvision c e m = (HasAppEnv c, AsAppError e, ServerProvision c e m)
 -- 3, start event loop to process messages
 app :: AppProvision c e m => m ()
 app = do
-    logDebug "start humming bird server ..."
-    ch <- view (appEnv . appEnvEventCh)
-    serve ch 
+    initializeUpstreamsEnv
+    logInfo "start humming bird server ..."
+    ch  <- liftIO newTChanIO
+    _   <- fork $ serve ch
+    logInfo "start event loop ..."
+    forever $ eventLoop ch
 
-defaultAppEnv :: (MonadIO m) => m AppEnv
-defaultAppEnv = do
-    queries <- liftIO $ newTVarIO Map.empty
-    eventCh <- liftIO newTChanIO
-    pure AppEnv
-        { _appEnvConfig     = defaultConfig
-        , _appEnvQueries    = queries
-        , _appEnvEventCh    = eventCh
-        }
+eventLoop :: AppProvision c e m => TChan Event -> m ()
+eventLoop ch = do
+    event <- liftIO $ atomically $ readTChan ch
+    case event of
+         RequestEvent RequestContext{..} -> do
+            logDebug $ pack ("request event: " <> show requestContextMessage)
+            rv <- process requestContextMessage
+            case rv of
+                Left    e -> throwError $ _AppDNSError # e
+                Right msg -> do
+                    liftIO $ atomically $ writeTChan requestContextChannel $ ResponseContext msg requestContextAddr
+         TimeoutEvent systime timeout -> undefined
+         ListenerExit reason -> undefined
+    pure()
+
+    where
+        process DNS.DNSMessage{ DNS.header = hd, DNS.question = q } = do
+            rrs <- resolve $ head q
+            case rrs of
+                Left   e -> pure (Left e)
+                Right rs -> do
+                    let hd0 = DNS.header DNS.defaultResponse
+                        resp = DNS.defaultResponse {
+                            DNS.header      = hd0 { DNS.identifier = DNS.identifier hd },
+                            DNS.question    = q,
+                            DNS.answer      = rs
+                        }
+                    pure (Right resp)
+
+initializeUpstreamsEnv :: AppProvision c e m => m ()
+initializeUpstreamsEnv = do
+    ups     <- view (appEnvConfig . cfgUpstreams)
+    seeds   <- liftIO $ mapM DNS.makeResolvSeed (resolveConfs ups)
+    rslvs   <- view appEnvResolvers
+    liftIO $ mapM_ (`DNS.withResolver` insert rslvs) seeds
+
+    where
+        toResolveConf ip mport = case mport of
+            Nothing   -> DNS.RCHostName ip
+            Just port -> DNS.RCHostPort ip port
+        
+        resolveConfs ups = 
+            [ DNS.defaultResolvConf {DNS.resolvInfo = toResolveConf (show ip) mport} 
+            | (ip, mport) <- ups ]
+
+        insert :: IORef [DNS.Resolver] -> DNS.Resolver -> IO ()
+        insert m r = atomicModifyIORef' m (\m' -> (r:m', ()))
