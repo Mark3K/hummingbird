@@ -1,54 +1,61 @@
-{-# LANGUAGE ConstraintKinds #-}
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE ConstraintKinds    #-}
+{-# LANGUAGE FlexibleContexts   #-}
+{-# LANGUAGE TemplateHaskell    #-}
 
 module HummingBird.Upstream where
 
-import Control.Lens (makeClassyPrisms, makeClassy, view)
-import Control.Monad.Error.Class (MonadError)
+import Control.Exception (Exception)
+import Control.Lens (makeClassyPrisms, makeClassy, view, (#))
+import Control.Monad.Error.Class (MonadError (throwError))
 import Control.Monad.IO.Class (MonadIO (liftIO))
+import Control.Monad.Logger.CallStack (MonadLogger)
 import Control.Monad.Reader (MonadReader)
 
-import           Data.IORef (IORef, readIORef)
+import Data.IORef (IORef, readIORef, atomicWriteIORef)
 import qualified Network.DNS as DNS
+import System.Random (StdGen, randomR)
 
 data UpstreamError
-    = UpstreamResolverError String
-    | UpstreamSocketError String
+    = UpstreamDnsError          DNS.DNSError
+    | UpstreamUnsupportError    String
+    | UpstreamEmptyError        String
+    | UpstreamUnknownError      String
     deriving (Show, Eq)
 makeClassyPrisms ''UpstreamError
 
-newtype UpstreamEnv = UpstreamEnv
+instance Exception UpstreamError
+
+data UpstreamEnv = UpstreamEnv
     { _upstreamResolvers    :: IORef [DNS.Resolver]
+    , _upstreamRadomGen     :: IORef StdGen
     }
 makeClassy ''UpstreamEnv
 
 type UpstreamProvision c e m = 
     ( MonadIO m
+    , MonadLogger m
     , MonadReader c m, HasUpstreamEnv c
     , MonadError e m, AsUpstreamError e
     )
 
-resolve :: UpstreamProvision c e m => DNS.Question -> m (Either DNS.DNSError [DNS.ResourceRecord])
+resolve :: UpstreamProvision c e m => DNS.Question -> m DNS.DNSMessage
 resolve (DNS.Question qd qt) = do
     ior <- view upstreamResolvers
     rs  <- liftIO $ readIORef ior
-    rv  <- liftIO $ DNS.lookup (head rs) qd qt
+    r   <- select rs
+    rv  <- liftIO $ DNS.lookupRaw r qd qt
     case rv of
-        Left e      -> pure (Left e)
-        Right rr    -> pure (Right $ map wrapper rr)
-
+        Left  e -> throwError $ _UpstreamDnsError # e
+        Right v -> pure v
+    
     where
-        wrapper :: DNS.RData -> DNS.ResourceRecord
-        wrapper rdata = DNS.ResourceRecord qd (getType rdata) DNS.classIN 30 rdata
-
-        getType :: DNS.RData -> DNS.TYPE
-        getType DNS.RD_A{}     = DNS.A
-        getType DNS.RD_NS{}    = DNS.NS
-        getType DNS.RD_CNAME{} = DNS.CNAME
-        getType DNS.RD_SOA{}   = DNS.SOA
-        getType DNS.RD_NULL{}  = DNS.NULL
-        getType DNS.RD_PTR{}   = DNS.PTR
-        getType DNS.RD_MX{}    = DNS.MX
-        getType DNS.RD_TXT{}   = DNS.TXT
-        getType DNS.RD_AAAA{}  = DNS.AAAA
-        getType _              = qt
+        select :: UpstreamProvision c e m => [DNS.Resolver] -> m DNS.Resolver
+        select xs = case length xs of
+            0 -> throwError $ _UpstreamEmptyError # "No upstream avaiable"
+            1 -> pure (head xs)
+            _ -> do
+                rgen    <- view upstreamRadomGen
+                gen     <- liftIO $ readIORef rgen
+                let (i, gen') = randomR (0, length xs - 1) gen
+                _       <- liftIO $ atomicWriteIORef rgen gen'
+                pure (xs !! i)

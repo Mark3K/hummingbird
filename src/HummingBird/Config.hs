@@ -10,6 +10,7 @@ module HummingBird.Config
     , cfgListenPort
     , cfgEnableTCP
     , cfgUpstreams
+    , cfgRefuseAny
     ) where
 
 import Control.Lens (makeLenses)
@@ -29,6 +30,7 @@ data Config = Config
     , _cfgListenPort    :: String
     , _cfgEnableTCP     :: Bool
     , _cfgUpstreams     :: [(IP, Maybe PortNumber)]
+    , _cfgRefuseAny     :: Bool
     } deriving (Show)
 makeLenses ''Config
 
@@ -41,4 +43,5 @@ defaultConfig = Config
     , _cfgListenPort    = "domain"
     , _cfgEnableTCP     = True
     , _cfgUpstreams     = []
+    , _cfgRefuseAny     = False
     }

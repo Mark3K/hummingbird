@@ -29,7 +29,6 @@ library
       HummingBird.App
       HummingBird.Config
       HummingBird.Event
-      HummingBird.Processor
       HummingBird.Server
       HummingBird.Server.TCP
       HummingBird.Server.UDP
@@ -68,6 +67,7 @@ library
 executable hummingbird
   main-is: Main.hs
   other-modules:
+      Params
       Paths_hummingbird
   autogen-modules:
       Paths_hummingbird
