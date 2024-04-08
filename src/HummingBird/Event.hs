@@ -1,4 +1,4 @@
-module HummingBird.Event 
+module HummingBird.Event
     ( Event (..)
     , Timeout (..)
     ) where

@@ -26,29 +26,29 @@ source-repository head
 library
   exposed-modules:
       HummingBird
+      HummingBird.App
       HummingBird.Config
-      HummingBird.Downstream
-      HummingBird.Downstream.UDP
       HummingBird.Event
       HummingBird.Server
-      HummingBird.ServerError
-      HummingBird.Timer
+      HummingBird.Server.TCP
+      HummingBird.Server.UDP
       HummingBird.Types
       HummingBird.Upstream
-      HummingBird.Upstream.UDP
   other-modules:
       Paths_hummingbird
   autogen-modules:
       Paths_hummingbird
   hs-source-dirs:
       src
-  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -fprint-potential-instances
   build-depends:
       async
     , base >=4.7 && <5
     , bytestring
     , containers
     , dns
+    , iproute
+    , lens
     , lifted-base
     , monad-control
     , monad-logger
@@ -67,12 +67,13 @@ library
 executable hummingbird
   main-is: Main.hs
   other-modules:
+      Params
       Paths_hummingbird
   autogen-modules:
       Paths_hummingbird
   hs-source-dirs:
       app
-  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -fprint-potential-instances -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       async
     , base >=4.7 && <5
@@ -80,6 +81,8 @@ executable hummingbird
     , containers
     , dns
     , hummingbird
+    , iproute
+    , lens
     , lifted-base
     , monad-control
     , monad-logger
@@ -104,7 +107,7 @@ test-suite hummingbird-test
       Paths_hummingbird
   hs-source-dirs:
       test
-  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -fprint-potential-instances -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       async
     , base >=4.7 && <5
@@ -112,6 +115,8 @@ test-suite hummingbird-test
     , containers
     , dns
     , hummingbird
+    , iproute
+    , lens
     , lifted-base
     , monad-control
     , monad-logger

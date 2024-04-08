@@ -1,29 +1,19 @@
-{-# LANGUAGE DataKinds          #-}
-{-# LANGUAGE RecordWildCards    #-}
+{-# LANGUAGE RecordWildCards #-}
 
 module Main (main) where
 
-import Control.Monad.Logger (LogLevel(..), LoggingT (runLoggingT), defaultOutput)
-import Data.Maybe (fromMaybe)
-import Options.Applicative
+import Control.Lens ((.~), (^.))
+import Control.Monad.Except (ExceptT,runExceptT)
+import Control.Monad.Reader (ReaderT,runReaderT)
+import Control.Monad.Logger (LogLevel(..), LogSource, LoggingT (runLoggingT), filterLogger, defaultOutput)
 
+import Data.Maybe (fromMaybe)
+
+import Options.Applicative
 import System.IO (withFile, IOMode (AppendMode), hSetBuffering, BufferMode (LineBuffering), stdout)
 
 import HummingBird
-
-data Params = Params
-    { configPath    :: String
-    , logFile       :: String
-    , verbose       :: Int
-    , version       :: Bool
-    } deriving (Show)
-
-params :: Parser Params
-params = Params 
-    <$> strOption (long "config-path" <> metavar "<PATH>" <> help "The configuration file path" <> showDefault <> value "")
-    <*> strOption (long "log-file" <> metavar "<PATH>" <> help "The log file path" <> showDefault <> value "")
-    <*> (length <$> many (flag' () (short 'v' <> help "verborsity")))
-    <*> switch (long "version" <> help "Show the program verion")
+import Params
 
 verboseToLogLevel :: Int -> Maybe LogLevel
 verboseToLogLevel 0 = Just LevelError
@@ -35,35 +25,61 @@ verboseToLogLevel _ = Nothing
 buildConfig :: Params -> IO Config
 buildConfig Params{..} = do
     cfg <- loadConfig configPath
-    -- TODO: merge defaultConfig with config from file
-    pure cfg
-        { cfgLogLevel   = fromMaybe (cfgLogLevel defaultConfig) (verboseToLogLevel verbose)
-        , cfgLogOutput  = if logFile /= "" then FileOutput logFile else Stdout 
-        }
+    pure $ cfgLogLevel  .~ logLevel cfg
+         $ cfgLogOutput .~ logOutput 
+         $ cfgUpstreams .~ upstreams
+         $ cfgRefuseAny .~ refuseAny
+         $ setip $ setport cfg
+    where
+        logLevel cfg    = fromMaybe (cfg ^. cfgLogLevel) (verboseToLogLevel verbose)
+        logOutput       = maybe Stdout FileOutput logFile
+        setip           = case listenAddr of
+            Nothing  -> id
+            Just  ip -> cfgListenAddr .~ show ip
+        setport         = case listenPort of
+            Nothing   -> id
+            Just port -> cfgListenPort .~ show port
 
-loadConfig :: FilePath -> IO Config
-loadConfig fp = pure defaultConfig
+loadConfig :: Maybe FilePath -> IO Config
+loadConfig Nothing  = pure defaultConfig
+loadConfig (Just _) = pure defaultConfig -- TODO
 
 run :: Params -> IO ()
 run vars = do
-    cfg  <- buildConfig vars
-    case cfgLogOutput cfg of
+    rv <- run' vars
+    case rv of
+        Left e  -> putStrLn ("AppError: " <> show e)
+        Right _ -> pure ()
+
+run' :: Params -> IO (Either AppError ())
+run' vars = do
+    cfg <- buildConfig vars
+    env <- (appEnvConfig .~ cfg) <$> defaultAppEnv
+    let ll = env ^.appEnvConfig . cfgLogLevel 
+    case env ^. appEnvConfig . cfgLogOutput of
         FileOutput fp -> withFile fp AppendMode $ \h -> 
-            hSetBuffering h LineBuffering >> runLoggingT (runUdpDownstreamT downstreamContext (runUdpUpstreamT upstreamContext (runServer cfg))) (defaultOutput h)
-        Stdout        -> runLoggingT (runUdpDownstreamT downstreamContext (runUdpUpstreamT upstreamContext (runServer cfg))) (defaultOutput stdout)
+            hSetBuffering h LineBuffering >> 
+            runLoggingT (filterLogger (withLogLevel ll) (runApp env app)) (defaultOutput h)
+
+        Stdout        -> 
+            runLoggingT (filterLogger (withLogLevel ll) (runApp env app)) (defaultOutput stdout)
 
     where
-        upstreamContext = UdpUpstreamContext 
-            { udpUpstreamContextHostName    = "114.114.114.114" 
-            , udpUpstreamContextServiceName = "domain"
-            , udpUpstreamContextTimeout     = 3000 
-            }
+        runApp  :: AppEnv 
+                -> ExceptT AppError (ReaderT AppEnv (LoggingT IO)) a 
+                -> LoggingT IO (Either AppError a)
+        runApp env = flip runReaderT env . runExceptT
 
-        downstreamContext = UdpDownstreamContext
-            { udpDownstreamContextHostName      = "127.0.0.1"
-            , udpDownstreamContextServiceName   = "domain"
-            , udpDownstreamContextBufferSize    = 1024
-            }
+        withLogLevel :: LogLevel -> (LogSource -> LogLevel -> Bool)
+        withLogLevel level _ = isLogLevelValid level
+
+isLogLevelValid :: LogLevel -> LogLevel -> Bool
+isLogLevelValid setting target = case setting of
+    LevelDebug      -> True
+    LevelInfo       -> target /= LevelDebug
+    LevelWarn       -> target `notElem` [LevelDebug, LevelInfo]
+    LevelError      -> target `notElem` [LevelDebug, LevelInfo, LevelWarn]
+    LevelOther    _ -> False
 
 main :: IO ()
 main = run =<< execParser opts
