@@ -5,9 +5,9 @@ module Main (main) where
 import Control.Lens ((.~), (^.))
 import Control.Monad.Except (ExceptT,runExceptT)
 import Control.Monad.Reader (ReaderT,runReaderT)
-import Control.Monad.Logger (LogLevel(..), LoggingT (runLoggingT), defaultOutput)
+import Control.Monad.Logger (LogLevel(..), LogSource, LoggingT (runLoggingT), filterLogger, defaultOutput)
 
-import Data.Maybe (fromMaybe, isNothing)
+import Data.Maybe (fromMaybe)
 
 import Options.Applicative
 import System.IO (withFile, IOMode (AppendMode), hSetBuffering, BufferMode (LineBuffering), stdout)
@@ -55,16 +55,31 @@ run' :: Params -> IO (Either AppError ())
 run' vars = do
     cfg <- buildConfig vars
     env <- (appEnvConfig .~ cfg) <$> defaultAppEnv
+    let ll = env ^.appEnvConfig . cfgLogLevel 
     case env ^. appEnvConfig . cfgLogOutput of
         FileOutput fp -> withFile fp AppendMode $ \h -> 
-            hSetBuffering h LineBuffering >> runLoggingT (runApp env app) (defaultOutput h)
-        Stdout        -> runLoggingT (runApp env app) (defaultOutput stdout)
+            hSetBuffering h LineBuffering >> 
+            runLoggingT (filterLogger (withLogLevel ll) (runApp env app)) (defaultOutput h)
+
+        Stdout        -> 
+            runLoggingT (filterLogger (withLogLevel ll) (runApp env app)) (defaultOutput stdout)
 
     where
         runApp  :: AppEnv 
                 -> ExceptT AppError (ReaderT AppEnv (LoggingT IO)) a 
                 -> LoggingT IO (Either AppError a)
         runApp env = flip runReaderT env . runExceptT
+
+        withLogLevel :: LogLevel -> (LogSource -> LogLevel -> Bool)
+        withLogLevel level _ = isLogLevelValid level
+
+isLogLevelValid :: LogLevel -> LogLevel -> Bool
+isLogLevelValid setting target = case setting of
+    LevelDebug      -> True
+    LevelInfo       -> target /= LevelDebug
+    LevelWarn       -> target `notElem` [LevelDebug, LevelInfo]
+    LevelError      -> target `notElem` [LevelDebug, LevelInfo, LevelWarn]
+    LevelOther    _ -> False
 
 main :: IO ()
 main = run =<< execParser opts

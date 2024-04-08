@@ -37,7 +37,7 @@ makeLenses ''Config
 
 defaultConfig :: Config
 defaultConfig = Config 
-    { _cfgLogLevel      = LevelInfo
+    { _cfgLogLevel      = LevelError
     , _cfgLogOutput     = Stdout
     , _cfgListenAddr    = "127.0.0.1"
     , _cfgListenPort    = "domain"
