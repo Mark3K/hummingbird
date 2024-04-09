@@ -2,11 +2,13 @@
 
 module Main (main) where
 
-import Control.Lens ((.~), (^.))
+import Control.Exception (throwIO)
+import Control.Lens ((.~), (^.), set)
 import Control.Monad.Except (ExceptT,runExceptT)
 import Control.Monad.Reader (ReaderT,runReaderT)
 import Control.Monad.Logger (LogLevel(..), LogSource, LoggingT (runLoggingT), filterLogger, defaultOutput)
 
+import Data.Bifunctor (first)
 import Data.Maybe (fromMaybe)
 
 import Options.Applicative
@@ -15,63 +17,91 @@ import System.IO (withFile, IOMode (AppendMode), hSetBuffering, BufferMode (Line
 import HummingBird
 import Params
 
-verboseToLogLevel :: Int -> Maybe LogLevel
-verboseToLogLevel 0 = Just LevelError
-verboseToLogLevel 1 = Just LevelWarn
-verboseToLogLevel 2 = Just LevelInfo
-verboseToLogLevel 3 = Just LevelDebug
-verboseToLogLevel _ = Nothing
+verboseToLogLevel :: Int -> LogLevel
+verboseToLogLevel 0 = LevelError
+verboseToLogLevel 1 = LevelWarn
+verboseToLogLevel 2 = LevelInfo
+verboseToLogLevel _ = LevelDebug
 
-buildConfig :: Params -> IO Config
+buildConfig :: Params -> IO (Either AppError Config)
 buildConfig Params{..} = do
-    cfg <- loadConfig configPath
-    pure $ cfgLogLevel  .~ logLevel cfg
-         $ cfgLogOutput .~ logOutput 
-         $ cfgUpstreams .~ upstreams
-         $ cfgRefuseAny .~ refuseAny
-         $ setip $ setport cfg
+    ecfg <- maybe (pure $ Right defaultConfig) fromFile configPath
+    case ecfg of
+        Left  e -> pure $ Left (AppConfigError e)
+        Right c -> pure $ Right 
+            ( setLogLevel
+            $ setLogFile
+            $ setUpstreams
+            $ setRefuseAny
+            $ setIP 
+            $ setPort c
+            )
     where
-        logLevel cfg    = fromMaybe (cfg ^. cfgLogLevel) (verboseToLogLevel verbose)
-        logOutput       = maybe Stdout FileOutput logFile
-        setip           = case listenAddr of
-            Nothing  -> id
-            Just  ip -> cfgListenAddr .~ show ip
-        setport         = case listenPort of
-            Nothing   -> id
-            Just port -> cfgListenPort .~ show port
+        setLogLevel = if verbose > 0
+            then set (configLog . logConfigLevel) (verboseToLogLevel verbose)
+            else id
 
-loadConfig :: Maybe FilePath -> IO Config
-loadConfig Nothing  = pure defaultConfig
-loadConfig (Just _) = pure defaultConfig -- TODO
+        setLogFile      = case logFile of
+            Nothing     -> id
+            Just path   -> set (configLog . logConfigFile) (Just path)
+
+        setIP           = case listenAddr of
+            Nothing     -> id
+            Just  ip    -> configListenAddr .~ show ip
+
+        setPort         = case listenPort of
+            Nothing     -> id
+            Just port   -> configListenPort .~ show port
+
+        setRefuseAny    = if refuseAny
+            then set configRefuseAny refuseAny
+            else id
+
+        setUpstreams    = case length upstreams of
+            0           -> id
+            _           -> set configUpstreams [Upstream u | u <- upstreams]
+
+        setEnableTcp    = if enableTcp
+            then set configEnableTCP enableTcp
+            else id
+
+buildAppEnv :: Params -> IO (Either AppError AppEnv)
+buildAppEnv params = do
+    cfg <- buildConfig params
+    case cfg of
+        Left  e -> pure $ Left e
+        Right c -> Right <$> (appEnvConfig .~ c) <$> defaultAppEnv
 
 run :: Params -> IO ()
-run vars = do
-    rv <- run' vars
-    case rv of
-        Left e  -> putStrLn ("AppError: " <> show e)
-        Right _ -> pure ()
+run params = do 
+    env' <- buildAppEnv params
+    case env' of
+        Left    e -> putStrLn ("error building appenv: " <> show e)
+        Right env -> do
+            rv <- runWithAppEnv env
+            case rv of
+                Left  e -> putStrLn ("error run hummingbird: " <> show e)
+                Right _ -> pure ()
 
-run' :: Params -> IO (Either AppError ())
-run' vars = do
-    cfg <- buildConfig vars
-    env <- (appEnvConfig .~ cfg) <$> defaultAppEnv
-    let ll = env ^.appEnvConfig . cfgLogLevel 
-    case env ^. appEnvConfig . cfgLogOutput of
-        FileOutput fp -> withFile fp AppendMode $ \h -> 
-            hSetBuffering h LineBuffering >> 
-            runLoggingT (filterLogger (withLogLevel ll) (runApp env app)) (defaultOutput h)
+runWithAppEnv :: AppEnv -> IO (Either AppError ())
+runWithAppEnv env = case logfile of
+    Just   path -> withFile path AppendMode $ \h -> 
+        hSetBuffering h LineBuffering >> 
+        runLoggingT (filterLogger withLogLevel (runApp env app)) (defaultOutput h)
 
-        Stdout        -> 
-            runLoggingT (filterLogger (withLogLevel ll) (runApp env app)) (defaultOutput stdout)
-
+    Nothing     -> 
+        runLoggingT (filterLogger withLogLevel (runApp env app)) (defaultOutput stdout)
     where
         runApp  :: AppEnv 
                 -> ExceptT AppError (ReaderT AppEnv (LoggingT IO)) a 
                 -> LoggingT IO (Either AppError a)
         runApp env = flip runReaderT env . runExceptT
 
-        withLogLevel :: LogLevel -> (LogSource -> LogLevel -> Bool)
-        withLogLevel level _ = isLogLevelValid level
+        withLogLevel :: LogSource -> LogLevel -> Bool
+        withLogLevel _ = isLogLevelValid loglevel
+
+        loglevel = env ^. appEnvConfig . configLog . logConfigLevel
+        logfile  = env ^. appEnvConfig . configLog . logConfigFile
 
 isLogLevelValid :: LogLevel -> LogLevel -> Bool
 isLogLevelValid setting target = case setting of

@@ -12,6 +12,7 @@ data Params = Params
     , listenPort    :: Maybe PortNumber
     , upstreams     :: [(IP, Maybe PortNumber)]
     , refuseAny     :: Bool
+    , enableTcp     :: Bool
     , verbose       :: Int
     , version       :: Bool
     } deriving (Show)
@@ -24,12 +25,14 @@ params = Params
     <*> optional listenPortParser
     <*> upstreamsParser
     <*> refuseAnyParser
+    <*> enableTcpParser
     <*> (length <$> many (flag' () (short 'v' <> help "Verbose output (-v|-vv|-vvv)")))
     <*> switch (long "version" <> help "Show the program verion")
 
 configPathParser :: Parser String
 configPathParser = strOption 
-    (  long "config-path" 
+    (  short 'C'
+    <> long "config-path" 
     <> metavar "<PATH>" 
     <> help "The configuration file path" 
     )
@@ -87,6 +90,9 @@ upstreamOption = option $ eitherReader $ \s -> case split ':' s of
 
 refuseAnyParser :: Parser Bool
 refuseAnyParser = switch (long "refuse-any" <> help "If specified, refuse ANY requests")
+
+enableTcpParser :: Parser Bool
+enableTcpParser = switch (long "enable-tcp" <> help "If specified, enable TCP server")
 
 readopt :: Read a => String -> Mod OptionFields a -> Parser a
 readopt msg = option $ eitherReader $ \s -> case readEither s of

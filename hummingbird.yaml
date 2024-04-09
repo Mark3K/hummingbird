@@ -1,0 +1,14 @@
+log:
+  level: debug
+  file: hummingbird.log
+
+listen_addr: 127.0.0.1
+listen_port: "1053"
+
+enable_tcp: true
+
+upstreams:
+  - 114.114.114.114
+  - 8.8.8.8
+
+refuse_any: true

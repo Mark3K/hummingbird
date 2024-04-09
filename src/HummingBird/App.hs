@@ -45,6 +45,7 @@ import HummingBird.Types
 data AppError 
     = AppServerError    ServerError
     | AppUpstreamError  UpstreamError
+    | AppConfigError    String
     deriving (Show, Eq)
 makeClassyPrisms ''AppError
 
@@ -72,9 +73,9 @@ instance HasServerEnv AppEnv where
     serverEnv f ev = ev <$ f ev'
         where
             ev' = ServerEnv
-                { _serverEnvHost        = ev ^. appEnvConfig . cfgListenAddr
-                , _serverEnvPort        = ev ^. appEnvConfig . cfgListenPort
-                , _serverEnvEableTCP    = ev ^. appEnvConfig . cfgEnableTCP
+                { _serverEnvHost        = ev ^. appEnvConfig . configListenAddr
+                , _serverEnvPort        = ev ^. appEnvConfig . configListenPort
+                , _serverEnvEableTCP    = ev ^. appEnvConfig . configEnableTCP
                 }
 
 instance AsServerError AppError where
@@ -143,7 +144,7 @@ handleRequest RequestContext{..} = do
 
 preprocess :: AppProvision c e m => DNS.DNSMessage -> m DNS.DNSMessage
 preprocess r@DNS.DNSMessage{ DNS.question = qs } = do
-    refuseAny <- view (appEnvConfig . cfgRefuseAny)
+    refuseAny <- view (appEnvConfig . configRefuseAny)
     if refuseAny
         then    pure r { DNS.question = filter nonany qs }
         else    pure r
@@ -162,7 +163,7 @@ postprocess = pure
     
 initializeUpstreamsEnv :: AppProvision c e m => m ()
 initializeUpstreamsEnv = do
-    ups     <- view (appEnvConfig . cfgUpstreams)
+    ups     <- view (appEnvConfig . configUpstreams)
     seeds   <- liftIO $ mapM DNS.makeResolvSeed (resolveConfs ups)
     rslvs   <- view appEnvResolvers
     liftIO $ mapM_ (`DNS.withResolver` insert rslvs) seeds
@@ -174,7 +175,7 @@ initializeUpstreamsEnv = do
         
         resolveConfs ups = 
             [ DNS.defaultResolvConf {DNS.resolvInfo = toResolveConf (show ip) mport} 
-            | (ip, mport) <- ups ]
+            | Upstream (ip, mport) <- ups ]
 
         insert :: IORef [DNS.Resolver] -> DNS.Resolver -> IO ()
         insert m r = atomicModifyIORef' m (\m' -> (r:m', ()))

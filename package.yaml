@@ -77,3 +77,4 @@ tests:
     - -with-rtsopts=-N
     dependencies:
     - hummingbird
+    - raw-strings-qq

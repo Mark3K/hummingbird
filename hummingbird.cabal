@@ -124,6 +124,7 @@ test-suite hummingbird-test
     , network
     , optparse-applicative
     , random
+    , raw-strings-qq
     , stm
     , text
     , time
