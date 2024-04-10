@@ -1,57 +1,84 @@
-{-# LANGUAGE AllowAmbiguousTypes    #-}
-{-# LANGUAGE ConstraintKinds        #-}
-{-# LANGUAGE FlexibleContexts       #-}
-{-# LANGUAGE FlexibleInstances      #-}
+{-# OPTIONS_GHC -Wno-orphans            #-}
+{-# LANGUAGE AllowAmbiguousTypes        #-}
+{-# LANGUAGE ConstraintKinds            #-}
+{-# LANGUAGE FlexibleContexts           #-}
+{-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralisedNewtypeDeriving #-}
-{-# LANGUAGE FunctionalDependencies #-}
-{-# LANGUAGE OverloadedStrings      #-}
-{-# LANGUAGE TemplateHaskell        #-}
-{-# LANGUAGE UndecidableInstances #-}
-{-# OPTIONS_GHC -Wno-orphans #-}
+{-# LANGUAGE FunctionalDependencies     #-}
+{-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE ScopedTypeVariables        #-}
+{-# LANGUAGE TemplateHaskell            #-}
+{-# LANGUAGE UndecidableInstances       #-}
 
 module HummingBird.Server where
 
+import Control.Concurrent.Lifted (fork)
 import Control.Concurrent.STM (TChan)
-import Control.Lens (makeClassy, makeClassyPrisms, (^.))
-import Control.Monad.Logger.CallStack (logDebug)
+import Control.Exception.Lifted (catch, SomeException)
+import Control.Lens (makeClassy, makeClassyPrisms, view, (^.), (#))
+import Control.Monad (when, void)
+import Control.Monad.IO.Class (MonadIO)
+import Control.Monad.Logger.CallStack (logDebug, logError)
 
-import Data.IP (IP)
-import Network.Socket
+import Data.Text (pack)
 
+import HummingBird.Config
 import HummingBird.Event
 import qualified HummingBird.Server.UDP as UDP
+import qualified HummingBird.Server.TCP as TCP
 
 data ServerError 
     = ServerUdpError UDP.UdpServerError
-    | ServerTcpError Int
+    | ServerTcpError TCP.TcpServerError
     deriving (Show, Eq)
 makeClassyPrisms ''ServerError
 
 instance (AsServerError e) => UDP.AsUdpServerError e where
     _UdpServerError = _ServerError . _ServerUdpError
 
+instance (AsServerError e) => TCP.AsTcpServerError e where
+    _TcpServerError = _ServerError . _ServerTcpError
+
 data ServerEnv = ServerEnv 
-    { _serverEnvHost        :: IP
-    , _serverEnvPort        :: PortNumber
-    , _serverEnvEableTCP    :: Bool 
-    } deriving (Show)
+    { _serverEnvUdp         :: UDP.UdpServerEnv
+    , _serverEnvTcp         :: TCP.TcpServerEnv
+    , _serverEnvEnableTcp   :: Bool
+    }
 makeClassy ''ServerEnv
 
 instance (HasServerEnv m) => UDP.HasUdpServerEnv m where
-    udpServerEnv f m = m <$ f ev'
-        where
-            ev' = UDP.UdpServerEnv 
-                { UDP._udpServerEnvHost = show $ m ^. serverEnv . serverEnvHost
-                , UDP._udpServerEnvPort = show $ m ^. serverEnv . serverEnvPort
-                }
+    udpServerEnv = serverEnv . serverEnvUdp
+       
+instance (HasServerEnv m) => TCP.HasTcpServerEnv m where
+    tcpServerEnv = serverEnv . serverEnvTcp
 
 type ServerProvision c e m = 
     ( HasServerEnv c
     , AsServerError e
     , UDP.UdpServerProvision c e m
+    , TCP.TcpServerProvision c e m
     )
+
+buildServerEnv :: (MonadIO m) => Config -> m (Either ServerError ServerEnv)
+buildServerEnv config = do
+    udp' <- UDP.buildUdpServerEnv config
+    case udp' of
+        Left    e -> pure $ Left $ _ServerUdpError # e
+        Right udp -> do 
+            tcp' <- TCP.buildTcpServerEnv config
+            case tcp' of
+                Left    e -> pure $ Left  $ _ServerTcpError # e
+                Right tcp -> pure $ Right $ ServerEnv
+                    { _serverEnvUdp         = udp
+                    , _serverEnvTcp         = tcp
+                    , _serverEnvEnableTcp   = config ^. configEnableTCP
+                    }
 
 serve :: ServerProvision c e m => TChan Event -> m ()
 serve ch = do
     logDebug "begin to start servers ..."
-    UDP.serve ch
+    _   <- fork $ catch (UDP.serve ch) (\(e :: SomeException) -> do
+        logError $ pack ("UDP server error: " <> show e))
+    tcp <- view serverEnvEnableTcp
+    when tcp $ void $ fork $ catch (TCP.serve ch) (\(e :: SomeException) -> do
+        logError $ pack ("TCP server error: " <> show e))

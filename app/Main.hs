@@ -33,6 +33,7 @@ buildConfig Params{..} = do
             $ setLogFile
             $ setUpstreams
             $ setRefuseAny
+            $ setEnableTcp
             $ setIP 
             $ setPort c
             )
@@ -65,16 +66,16 @@ buildConfig Params{..} = do
             then set configEnableTCP enableTcp
             else id
 
-buildAppEnv :: Params -> IO (Either AppError AppEnv)
-buildAppEnv params = do
-    cfg <- buildConfig params
-    case cfg of
-        Left  e -> pure $ Left e
-        Right c -> Right <$> (appEnvConfig .~ c) <$> defaultAppEnv
+buildEnv :: Params -> IO (Either AppError AppEnv)
+buildEnv vars = do
+    cfg' <- buildConfig vars
+    case cfg' of
+        Left e -> pure $ Left e
+        Right cfg -> buildAppEnv cfg
 
 run :: Params -> IO ()
-run params = do 
-    env' <- buildAppEnv params
+run vars = do 
+    env' <- buildEnv vars
     case env' of
         Left    e -> putStrLn ("error building appenv: " <> show e)
         Right env -> do
@@ -95,7 +96,7 @@ runWithAppEnv env = case logfile of
         runApp  :: AppEnv 
                 -> ExceptT AppError (ReaderT AppEnv (LoggingT IO)) a 
                 -> LoggingT IO (Either AppError a)
-        runApp env = flip runReaderT env . runExceptT
+        runApp ev = flip runReaderT ev . runExceptT
 
         withLogLevel :: LogSource -> LogLevel -> Bool
         withLogLevel _ = isLogLevelValid loglevel

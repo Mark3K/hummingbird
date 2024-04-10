@@ -11,9 +11,12 @@ import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.Logger.CallStack (MonadLogger)
 import Control.Monad.Reader (MonadReader)
 
-import Data.IORef (IORef, readIORef, atomicWriteIORef)
+import Data.IORef (IORef, readIORef, atomicWriteIORef, newIORef)
+
 import qualified Network.DNS as DNS
-import System.Random (StdGen, randomR)
+import System.Random (StdGen, randomR, initStdGen)
+
+import HummingBird.Config
 
 data UpstreamError
     = UpstreamDnsError          DNS.DNSError
@@ -37,6 +40,13 @@ type UpstreamProvision c e m =
     , MonadReader c m, HasUpstreamEnv c
     , MonadError e m, AsUpstreamError e
     )
+
+buildUpstreamEnv :: (MonadIO m) => Config -> m (Either UpstreamError UpstreamEnv)
+buildUpstreamEnv _config = do
+    resolvers <- liftIO $ newIORef mempty
+    randomgen <- initStdGen
+    refgen    <- liftIO $ newIORef randomgen
+    pure $ Right $ UpstreamEnv resolvers refgen
 
 resolve :: UpstreamProvision c e m => DNS.Question -> m DNS.DNSMessage
 resolve (DNS.Question qd qt) = do

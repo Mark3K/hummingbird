@@ -14,7 +14,7 @@
 
 module HummingBird.App 
     ( app
-    , defaultAppEnv
+    , buildAppEnv
     , AppEnv(..)
     , AppError(..)
     , appEnvConfig
@@ -23,18 +23,17 @@ module HummingBird.App
 import Control.Concurrent.Lifted (fork)
 import Control.Concurrent.STM (newTChanIO, TChan, atomically, readTChan, writeTChan)
 import Control.Exception.Lifted (catch, Exception)
-import Control.Lens (makeClassy, makeClassyPrisms, view, (^.), (#))
+import Control.Lens (makeClassy, makeClassyPrisms, view, (#))
 import Control.Monad (forever)
 import Control.Monad.Except (MonadError(throwError))
 import Control.Monad.Logger.CallStack (logInfo, logDebug, logError)
 import Control.Monad.Reader (MonadIO (liftIO))
 
-import Data.IORef (IORef, newIORef, atomicModifyIORef')
+import Data.IORef (IORef, atomicModifyIORef')
 import Data.Text (pack)
 
 import qualified Network.DNS as DNS
 
-import System.Random (StdGen, initStdGen)
 
 import HummingBird.Config
 import HummingBird.Event
@@ -53,40 +52,34 @@ instance Exception AppError
 
 data AppEnv = AppEnv 
     { _appEnvConfig         :: Config 
-    , _appEnvResolvers      :: IORef [DNS.Resolver]
-    , _appEnvRandomGen      :: IORef StdGen
+    , _appEnvUpstream       :: UpstreamEnv
+    , _appEnvServer         :: ServerEnv
     }
 makeClassy ''AppEnv
 
-defaultAppEnv :: (MonadIO m) => m AppEnv
-defaultAppEnv = do
-    resolvers <- liftIO $ newIORef mempty
-    randomgen <- initStdGen
-    refgen    <- liftIO $ newIORef randomgen
-    pure AppEnv 
-        { _appEnvConfig     = defaultConfig 
-        , _appEnvResolvers  = resolvers
-        , _appEnvRandomGen  = refgen
-        }
+buildAppEnv :: (MonadIO m) => Config -> m (Either AppError AppEnv)
+buildAppEnv config = do
+    upstream' <- buildUpstreamEnv config
+    case upstream' of
+        Left         e -> pure $ Left $ _AppUpstreamError # e
+        Right upstream -> do
+            server' <- buildServerEnv config
+            case server' of
+                Left e -> pure $ Left $ _AppServerError # e
+                Right server -> pure $ Right $ AppEnv 
+                    { _appEnvConfig     = config 
+                    , _appEnvUpstream   = upstream
+                    , _appEnvServer     = server
+                    }
 
 instance HasServerEnv AppEnv where
-    serverEnv f ev = ev <$ f ev'
-        where
-            ev' = ServerEnv
-                { _serverEnvHost        = ev ^. appEnvConfig . configListenAddr
-                , _serverEnvPort        = ev ^. appEnvConfig . configListenPort
-                , _serverEnvEableTCP    = ev ^. appEnvConfig . configEnableTCP
-                }
+    serverEnv = appEnv . appEnvServer
 
 instance AsServerError AppError where
     _ServerError = _AppServerError . _ServerError
 
 instance HasUpstreamEnv AppEnv where
-    upstreamEnv f ev = ev <$ f ev'
-        where ev' = UpstreamEnv 
-                { _upstreamResolvers    = ev ^. appEnvResolvers 
-                , _upstreamRadomGen     = ev ^. appEnvRandomGen 
-                }
+    upstreamEnv = appEnv . appEnvUpstream
 
 instance AsUpstreamError AppError where
     _UpstreamError = _AppUpstreamError . _UpstreamError
@@ -99,7 +92,7 @@ app = do
     initializeUpstreamsEnv
     logInfo "start humming bird server"
     ch  <- liftIO newTChanIO
-    _   <- fork $ serve ch
+    serve ch
     logInfo "start event loop"
     forever $ eventLoop ch
 
@@ -118,7 +111,10 @@ handleRequest :: AppProvision c e m => RequestContext -> m ()
 handleRequest RequestContext{..} = do
     logDebug $ pack ("handle request event: " <> show requestContextMessage)
     resp <- catch (handle requestContextMessage) (onerror requestContextMessage)
-    liftIO $ atomically $ writeTChan requestContextChannel $ ResponseContext resp requestContextAddr
+    rc   <- case requestContextAddr of
+        Nothing     -> pure $ ResponseTcp $ TcpResponse resp
+        Just addr   -> pure $ ResponseUdp $ UdpResponse resp addr
+    liftIO $ atomically $ writeTChan requestContextChannel rc
     where
         handle r = preprocess r >>= process >>= postprocess
 
@@ -165,7 +161,7 @@ initializeUpstreamsEnv :: AppProvision c e m => m ()
 initializeUpstreamsEnv = do
     ups     <- view (appEnvConfig . configUpstreams)
     seeds   <- liftIO $ mapM DNS.makeResolvSeed (resolveConfs ups)
-    rslvs   <- view appEnvResolvers
+    rslvs   <- view (appEnvUpstream . upstreamResolvers)
     liftIO $ mapM_ (`DNS.withResolver` insert rslvs) seeds
 
     where
