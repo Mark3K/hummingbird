@@ -22,7 +22,7 @@ log:
   file: hummingbird.log
 
 listen_addr: 127.0.0.1
-listen_port: "1053"
+listen_port: 1053
 
 enable_tcp: false
 

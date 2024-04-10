@@ -15,6 +15,7 @@ import Control.Concurrent.STM (TChan)
 import Control.Lens (makeClassy, makeClassyPrisms, (^.))
 import Control.Monad.Logger.CallStack (logDebug)
 
+import Data.IP (IP)
 import Network.Socket
 
 import HummingBird.Event
@@ -30,8 +31,8 @@ instance (AsServerError e) => UDP.AsUdpServerError e where
     _UdpServerError = _ServerError . _ServerUdpError
 
 data ServerEnv = ServerEnv 
-    { _serverEnvHost        :: HostName
-    , _serverEnvPort        :: ServiceName
+    { _serverEnvHost        :: IP
+    , _serverEnvPort        :: PortNumber
     , _serverEnvEableTCP    :: Bool 
     } deriving (Show)
 makeClassy ''ServerEnv
@@ -40,8 +41,8 @@ instance (HasServerEnv m) => UDP.HasUdpServerEnv m where
     udpServerEnv f m = m <$ f ev'
         where
             ev' = UDP.UdpServerEnv 
-                { UDP._udpServerEnvHost = m ^. serverEnv . serverEnvHost
-                , UDP._udpServerEnvPort = m ^. serverEnv . serverEnvPort
+                { UDP._udpServerEnvHost = show $ m ^. serverEnv . serverEnvHost
+                , UDP._udpServerEnvPort = show $ m ^. serverEnv . serverEnvPort
                 }
 
 type ServerProvision c e m = 

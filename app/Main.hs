@@ -47,11 +47,11 @@ buildConfig Params{..} = do
 
         setIP           = case listenAddr of
             Nothing     -> id
-            Just  ip    -> configListenAddr .~ show ip
+            Just  ip    -> configListenAddr .~ ip
 
         setPort         = case listenPort of
             Nothing     -> id
-            Just port   -> configListenPort .~ show port
+            Just port   -> configListenPort .~ port
 
         setRefuseAny    = if refuseAny
             then set configRefuseAny refuseAny

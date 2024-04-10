@@ -56,6 +56,7 @@ library
     , network
     , optparse-applicative
     , random
+    , scientific
     , stm
     , text
     , time
@@ -90,6 +91,7 @@ executable hummingbird
     , network
     , optparse-applicative
     , random
+    , scientific
     , stm
     , text
     , time
@@ -125,6 +127,7 @@ test-suite hummingbird-test
     , optparse-applicative
     , random
     , raw-strings-qq
+    , scientific
     , stm
     , text
     , time
