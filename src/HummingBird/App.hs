@@ -35,7 +35,6 @@ import Data.Text (pack)
 
 import qualified Network.DNS as DNS
 
-
 import HummingBird.Config
 import HummingBird.Event
 import HummingBird.Upstream

@@ -9,7 +9,7 @@ module HummingBird.Server.TCP where
 
 import Control.Concurrent.Lifted (forkFinally, fork)
 import Control.Concurrent.STM
-import Control.Exception.Lifted (catch, bracketOnError, SomeException)
+import Control.Exception.Lifted (catch, SomeException)
 import Control.Lens (makeClassyPrisms, makeClassy, view, (^.), (#))
 import Control.Monad (forever, when)
 import Control.Monad.Except (MonadError(throwError))
@@ -28,6 +28,7 @@ import Network.Socket
 import HummingBird.Event
 import HummingBird.Types
 import HummingBird.Config
+import HummingBird.Server.Common
 
 data TcpServerError 
     = NoAddrAvailable (HostName, ServiceName)
@@ -68,22 +69,25 @@ serve ch = do
     host <- view tcpServerEnvHost
     port <- view tcpServerEnvPort
 
-    (sock, addr) <- bindSock host port
-    _ <- liftIO $ listen sock 5
-    logDebug $ pack ("TCP serve at " <> show addr)
+    rv   <- openSock Stream host port
+    case rv of
+        Left             s -> throwError $ _TcpSocketError # s
+        Right (sock, addr) -> do
+            _ <- liftIO $ listen sock 5
+            logDebug $ pack ("TCP serve at " <> show addr)
 
-    respCh <- liftIO newTChanIO
-    _ <- fork (forever $ sender respCh)
-    forever $ do
-        (csock, caddr) <- liftIO $ accept sock
-        logDebug $ pack ("A new TCP client " <> show caddr)
-        forkFinally 
-            (catch (process csock ch respCh)
-                   (\(se :: SomeException) -> do
-                        logError $ pack ("error processing tcp request: " <> show se)
-                        throwError $ _TcpSocketError # show se)
-            )
-            (\_ -> closeSocket csock)
+            respCh <- liftIO newTChanIO
+            _ <- fork (forever $ sender respCh)
+            forever $ do
+                (csock, caddr) <- liftIO $ accept sock
+                logDebug $ pack ("A new TCP client " <> show caddr)
+                forkFinally 
+                    (catch (process csock ch respCh)
+                        (\(se :: SomeException) -> do
+                                logError $ pack ("error processing tcp request: " <> show se)
+                                throwError $ _TcpSocketError # show se)
+                    )
+                    (\_ -> closeSock csock)
 
     where
         process sock ch0 ch1 = do
@@ -126,37 +130,4 @@ serve ch = do
                         when (Map.member _id requests) $ case Map.lookup _id requests of
                             Nothing -> pure ()
                             Just rs -> putTMVar rs $ OK trMessage
-        
-bindSock :: TcpServerProvision c e m => HostName -> ServiceName -> m (Socket, SockAddr)
-bindSock host port = do
-    addrs <- liftIO $ getAddrInfo (Just hints) (Just host) (Just port)
-    logDebug $ pack ("TCP available address: " <> show addrs)
-    tryAddrs addrs
-    where
-        hints :: AddrInfo
-        hints = defaultHints
-            { addrFlags         = [AI_PASSIVE, AI_NUMERICHOST, AI_NUMERICSERV]
-            , addrSocketType    = Stream
-            }
-
-        tryAddrs :: (MonadIO m, MonadBaseControl IO m, MonadError e m, AsTcpServerError e) 
-                 => [AddrInfo] -> m (Socket, SockAddr)
-        tryAddrs = \case
-            []      -> throwError $ _NoAddrAvailable # (host, port)
-            [x]     -> useAddr x
-            (x:xs)  -> catch (useAddr x) (\(_ :: IOError) -> tryAddrs xs)
-        
-        useAddr :: (MonadIO m, MonadBaseControl IO m) 
-                => AddrInfo -> m (Socket, SockAddr)
-        useAddr addr = bracketOnError (newSocket addr) closeSocket $ \sock -> do
-            let sockAddr = addrAddress addr
-            liftIO (bind sock sockAddr)
-            pure (sock, sockAddr)
-
-newSocket :: MonadIO m => AddrInfo -> m Socket
-newSocket AddrInfo{..} = do
-    liftIO (socket addrFamily addrSocketType addrProtocol)
-
-closeSocket :: MonadIO m => Socket -> m ()
-closeSocket sock = liftIO $ do
-    catch (close sock) (\(_ :: SomeException) -> pure ())
+ 

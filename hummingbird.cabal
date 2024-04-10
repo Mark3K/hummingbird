@@ -30,6 +30,7 @@ library
       HummingBird.Config
       HummingBird.Event
       HummingBird.Server
+      HummingBird.Server.Common
       HummingBird.Server.TCP
       HummingBird.Server.UDP
       HummingBird.Types
