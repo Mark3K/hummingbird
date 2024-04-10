@@ -20,6 +20,7 @@ import Control.Monad (when, void)
 import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Logger.CallStack (logDebug, logError)
 
+import Data.Bifunctor (bimap)
 import Data.Text (pack)
 
 import HummingBird.Config
@@ -61,18 +62,16 @@ type ServerProvision c e m =
 
 buildServerEnv :: (MonadIO m) => Config -> m (Either ServerError ServerEnv)
 buildServerEnv config = do
-    udp' <- UDP.buildUdpServerEnv config
-    case udp' of
-        Left    e -> pure $ Left $ _ServerUdpError # e
-        Right udp -> do 
-            tcp' <- TCP.buildTcpServerEnv config
-            case tcp' of
-                Left    e -> pure $ Left  $ _ServerTcpError # e
-                Right tcp -> pure $ Right $ ServerEnv
-                    { _serverEnvUdp         = udp
-                    , _serverEnvTcp         = tcp
-                    , _serverEnvEnableTcp   = config ^. configEnableTCP
-                    }
+    udp <- UDP.buildUdpServerEnv config
+    tcp <- TCP.buildTcpServerEnv config
+    pure $ bimap (_ServerUdpError #) build udp 
+         >>= (\b -> bimap (_ServerTcpError #) b tcp)
+    where 
+        build u t = ServerEnv
+            { _serverEnvUdp         = u
+            , _serverEnvTcp         = t
+            , _serverEnvEnableTcp   = config ^. configEnableTCP
+            }
 
 serve :: ServerProvision c e m => TChan Event -> m ()
 serve ch = do

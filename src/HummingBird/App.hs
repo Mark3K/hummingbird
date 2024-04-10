@@ -29,6 +29,7 @@ import Control.Monad.Except (MonadError(throwError))
 import Control.Monad.Logger.CallStack (logInfo, logDebug, logError)
 import Control.Monad.Reader (MonadIO (liftIO))
 
+import Data.Bifunctor (bimap)
 import Data.IORef (IORef, atomicModifyIORef')
 import Data.Text (pack)
 
@@ -59,18 +60,16 @@ makeClassy ''AppEnv
 
 buildAppEnv :: (MonadIO m) => Config -> m (Either AppError AppEnv)
 buildAppEnv config = do
-    upstream' <- buildUpstreamEnv config
-    case upstream' of
-        Left         e -> pure $ Left $ _AppUpstreamError # e
-        Right upstream -> do
-            server' <- buildServerEnv config
-            case server' of
-                Left e -> pure $ Left $ _AppServerError # e
-                Right server -> pure $ Right $ AppEnv 
-                    { _appEnvConfig     = config 
-                    , _appEnvUpstream   = upstream
-                    , _appEnvServer     = server
-                    }
+    upstream <- buildUpstreamEnv config
+    server <- buildServerEnv config
+    pure $ bimap (_AppUpstreamError #) build upstream 
+         >>= (\b -> bimap (_AppServerError #) b server)
+    where
+        build u s = AppEnv
+            { _appEnvConfig     = config
+            , _appEnvUpstream   = u
+            , _appEnvServer     = s
+            }
 
 instance HasServerEnv AppEnv where
     serverEnv = appEnv . appEnvServer
