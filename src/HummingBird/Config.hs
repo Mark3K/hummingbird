@@ -17,6 +17,7 @@ module HummingBird.Config
     , configListenPort
     , configEnableTCP
     , configUpstreams
+    , configUpstreamFiles
     , configRefuseAny
     -- utils function
     , fromFile
@@ -28,16 +29,15 @@ import Control.Monad.Logger (LogLevel(..))
 import Data.Bifunctor (first)
 import Data.IP (IP)
 import qualified Data.Yaml as Y
-import Data.Yaml (FromJSON(..), (.:?))
 import Data.Scientific (toBoundedInteger)
 import Data.Text (unpack, split)
+import Data.Maybe (fromMaybe)
+import Data.Yaml (FromJSON(..), (.:?))
 
 import Network.Socket (PortNumber)
-
 import Text.Read (readEither)
-import Data.Maybe (fromMaybe)
 
-newtype Upstream = Upstream (IP, Maybe PortNumber) deriving (Show, Eq)
+import HummingBird.Types
 
 data LogConfig = LogConfig
     { _logConfigLevel :: LogLevel
@@ -68,12 +68,13 @@ instance FromJSON LogConfig where
     parseJSON           _  = mempty
 
 data Config = Config 
-    { _configLog           :: LogConfig
-    , _configListenAddr    :: IP
-    , _configListenPort    :: PortNumber
-    , _configEnableTCP     :: Bool
-    , _configUpstreams     :: [Upstream]
-    , _configRefuseAny     :: Bool
+    { _configLog            :: LogConfig
+    , _configListenAddr     :: IP
+    , _configListenPort     :: PortNumber
+    , _configEnableTCP      :: Bool
+    , _configRefuseAny      :: Bool
+    , _configUpstreams      :: [Upstream]
+    , _configUpstreamFiles  :: [FilePath]
     } deriving (Show, Eq)
 makeLenses ''Config
 
@@ -83,8 +84,9 @@ defaultConfig = Config
     , _configListenAddr    = "127.0.0.1"
     , _configListenPort    = 53
     , _configEnableTCP     = True
-    , _configUpstreams     = []
     , _configRefuseAny     = False
+    , _configUpstreams     = []
+    , _configUpstreamFiles = []
     }
 
 instance FromJSON Config where
@@ -93,15 +95,17 @@ instance FromJSON Config where
         addr        <- fromMaybe (defaultConfig ^. configListenAddr) <$> v .:? "listen_addr"
         port        <- fromMaybe (defaultConfig ^. configListenPort) <$> v .:? "listen_port"
         enableTCP   <- fromMaybe (defaultConfig ^. configEnableTCP)  <$> v .:? "enable_tcp"
-        upstreams   <- fromMaybe (defaultConfig ^. configUpstreams)  <$> v .:? "upstreams"
         refuseAny   <- fromMaybe (defaultConfig ^. configRefuseAny)  <$> v .:? "refuse_any"
+        upstreams   <- fromMaybe (defaultConfig ^. configUpstreams)  <$> v .:? "upstreams"
+        upsFiles    <- fromMaybe (defaultConfig ^. configUpstreamFiles)  <$> v .:? "upstream_files"
         pure $ Config 
             logs
             addr
             port
             enableTCP
-            upstreams
             refuseAny
+            upstreams
+            upsFiles
 
     parseJSON _            = fail "Expected Object for Config value"
 
@@ -122,11 +126,11 @@ instance FromJSON PortNumber where
 
 instance FromJSON Upstream where
     parseJSON (Y.String v) = case split (==':') v of
-        [ip]        -> Upstream . (, Nothing) <$> parseJSON (Y.String ip)
+        [ip]        -> (`Upstream` Nothing) <$> parseJSON (Y.String ip)
         [ip, port]  -> do
             i <- parseJSON (Y.String ip)
             p <- parseJSON (Y.String port)
-            pure $ Upstream (i, Just p)
+            pure $ Upstream i (Just p)
         xs           -> fail ("Invalid End Point: " <> show xs)
     parseJSON _          = mempty
 

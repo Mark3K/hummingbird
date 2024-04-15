@@ -5,12 +5,16 @@ module HummingBird.Types
     , ResponseContext (..)
     , TcpResponse (..)
     , UdpResponse (..)
+    , Upstream (..)
+    , Route (..)
     ) where
 
 import Control.Concurrent.STM (TChan)
 
-import Network.DNS (DNSMessage)
-import Network.Socket (SockAddr)
+import Data.IP (IP)
+
+import Network.DNS (Domain, DNSMessage)
+import Network.Socket (SockAddr, PortNumber)
 
 data RequestContext = RequestContext
     { requestContextMessage     :: DNSMessage 
@@ -34,3 +38,7 @@ data UdpResponse = UdpResponse
     { urMessage     :: DNSMessage
     , urAddr        :: SockAddr
     } deriving (Show)
+
+data Upstream   = Upstream IP (Maybe PortNumber) deriving (Show, Eq)
+
+data Route      = Route [Domain] Upstream deriving (Show, Eq)

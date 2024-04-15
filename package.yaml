@@ -41,6 +41,8 @@ dependencies:
 - lens
 - iproute
 - scientific
+- bytestring-trie
+- parsec
 
 ghc-options:
 - -Wall

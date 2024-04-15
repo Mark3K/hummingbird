@@ -2,14 +2,10 @@
 
 module Main (main) where
 
-import Control.Exception (throwIO)
 import Control.Lens ((.~), (^.), set)
 import Control.Monad.Except (ExceptT,runExceptT)
 import Control.Monad.Reader (ReaderT,runReaderT)
 import Control.Monad.Logger (LogLevel(..), LogSource, LoggingT (runLoggingT), filterLogger, defaultOutput)
-
-import Data.Bifunctor (first)
-import Data.Maybe (fromMaybe)
 
 import Options.Applicative
 import System.IO (withFile, IOMode (AppendMode), hSetBuffering, BufferMode (LineBuffering), stdout)
@@ -60,7 +56,7 @@ buildConfig Params{..} = do
 
         setUpstreams    = case length upstreams of
             0           -> id
-            _           -> set configUpstreams [Upstream u | u <- upstreams]
+            _           -> set configUpstreams [Upstream ip mp | (ip, mp) <- upstreams]
 
         setEnableTcp    = if enableTcp
             then set configEnableTCP enableTcp
