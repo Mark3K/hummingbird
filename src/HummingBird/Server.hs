@@ -53,7 +53,7 @@ instance (HasServerEnv m) => UDP.HasUdpServerEnv m where
 instance (HasServerEnv m) => TCP.HasTcpServerEnv m where
     tcpServerEnv = serverEnv . serverEnvTcp
 
-type ServerProvision c e m = 
+type ServerProvision c e m =
     ( HasServerEnv c
     , AsServerError e
     , UDP.UdpServerProvision c e m

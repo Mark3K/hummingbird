@@ -65,21 +65,20 @@ resolve q@(DNS.Question qd _) = do
             logDebug $ pack ("Found " <> show (length rs) <> " resolvers for " <> show qd)
             concur' <- view upstreamConcur
             concur  <- liftIO $ readIORef concur'
-            if concur then cresolve rs q else sresolve rs q
+            if concur then concurResolve rs q else seqResolve rs q
 
-
-sresolve :: UpstreamProvision c e m => [DNS.Resolver] -> DNS.Question -> m DNS.DNSMessage
-sresolve (r:rs) q@(DNS.Question qd qt) = do
+seqResolve :: UpstreamProvision c e m => [DNS.Resolver] -> DNS.Question -> m DNS.DNSMessage
+seqResolve (r:rs) q@(DNS.Question qd qt) = do
     rv <- liftIO $ DNS.lookupRaw r qd qt
     case rv of
         Left  e -> if null rs
             then throwError $ _UpstreamDnsError # e
-            else sresolve rs q
+            else seqResolve rs q
         Right v -> pure v
-sresolve [] (DNS.Question qd _) = throwError $ _UpstreamEmptyError # ("No upstream found for " <> show qd)
+seqResolve [] (DNS.Question qd _) = throwError $ _UpstreamEmptyError # ("No upstream found for " <> show qd)
 
-cresolve :: [DNS.Resolver] -> DNS.Question -> m DNS.DNSMessage
-cresolve = undefined
+concurResolve :: [DNS.Resolver] -> DNS.Question -> m DNS.DNSMessage
+concurResolve = undefined
     -- ior <- view upstreamResolvers
     -- rs  <- liftIO $ readIORef ior
     -- r   <- select rs

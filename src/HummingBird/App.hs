@@ -24,7 +24,7 @@ module HummingBird.App
 
 import Control.Concurrent.Lifted (fork)
 import Control.Concurrent.STM (newTChanIO, TChan, atomically, readTChan, writeTChan)
-import Control.Exception.Lifted (catch, Exception, SomeException (SomeException))
+import Control.Exception (Exception)
 import Control.Lens (makeClassy, makeClassyPrisms, view, (#))
 import Control.Monad (forever)
 import Control.Monad.Except (MonadError(throwError, catchError))
@@ -43,7 +43,6 @@ import HummingBird.Event
 import HummingBird.Upstream
 import HummingBird.Server
 import HummingBird.Types
-
 import HummingBird.Router (Router)
 import qualified HummingBird.Router as Router
 import HummingBird.Parser.ServerConfig (routesFromFile)
@@ -89,18 +88,15 @@ instance HasUpstreamEnv AppEnv where
 instance AsUpstreamError AppError where
     _UpstreamError = _AppUpstreamError . _UpstreamError
 
-type AppProvision c e m = 
-    ( HasAppEnv c
-    , AsAppError e
-    , ServerProvision c e m
-    , UpstreamProvision c e m
+type AppProvision m = 
+    ( MonadIO m
+    , MonadLogger m
+    , MonadBaseControl IO m
+    , MonadReader AppEnv m 
+    , MonadError AppError m
     )
 
-app :: ( MonadIO m, MonadLogger m, MonadBaseControl IO m
-       , MonadReader AppEnv m 
-       , MonadError AppError m
-       ) 
-    => m ()
+app :: AppProvision m =>  m ()
 app = do
     logInfo "initialize server enviroment"
     initializeUpstreamsEnv
@@ -114,9 +110,7 @@ app = do
             pure ()
         e                  -> throwError e
 
-eventLoop 
-    :: ( MonadIO m, MonadLogger m, MonadBaseControl IO m, MonadError AppError m, MonadReader AppEnv m) 
-    => TChan Event -> m ()
+eventLoop :: AppProvision m => TChan Event -> m ()
 eventLoop ch = do
     event <- liftIO $ atomically $ readTChan ch
     case event of
@@ -127,10 +121,7 @@ eventLoop ch = do
          TimeoutEvent systime timeout -> undefined
          ListenerExit reason -> undefined
 
-handleRequest 
-    :: ( MonadIO m, MonadLogger m, MonadError AppError m
-       , MonadReader AppEnv m) 
-    => RequestContext -> m ()
+handleRequest :: AppProvision m => RequestContext -> m ()
 handleRequest RequestContext{..} = do
     logDebug $ pack ("handle request event: " <> show requestContextMessage)
     resp <- handle requestContextMessage `catchError` \case 
@@ -138,7 +129,6 @@ handleRequest RequestContext{..} = do
             logError $ pack ("unexpected error: " <> show e)
             buildErrorResponse requestContextMessage e
         e                  -> throwError e
-        -- pure DNS.defaultResponse
     rc   <- case requestContextAddr of
         Nothing     -> pure $ ResponseTcp $ TcpResponse resp
         Just addr   -> pure $ ResponseUdp $ UdpResponse resp addr
@@ -146,7 +136,7 @@ handleRequest RequestContext{..} = do
     where
         handle r = preprocess r >>= process >>= postprocess
 
-preprocess :: (MonadIO m, MonadReader AppEnv m) => DNS.DNSMessage -> m DNS.DNSMessage
+preprocess :: AppProvision m => DNS.DNSMessage -> m DNS.DNSMessage
 preprocess r@DNS.DNSMessage{ DNS.question = qs } = do
     refuseAny <- view (appEnvConfig . configRefuseAny)
     if refuseAny
@@ -155,18 +145,14 @@ preprocess r@DNS.DNSMessage{ DNS.question = qs } = do
     
     where nonany DNS.Question { DNS.qtype = typ } = typ /= DNS.ANY
 
-process 
-    :: (MonadIO m, MonadLogger m, MonadReader AppEnv m, MonadError AppError m)
-    => DNS.DNSMessage -> m DNS.DNSMessage
+process :: AppProvision m => DNS.DNSMessage -> m DNS.DNSMessage
 process DNS.DNSMessage{DNS.header = hd, DNS.question = qs} = case qs of
     [q] -> do
         rc <- resolve q
         pure rc { DNS.header = (DNS.header rc) { DNS.identifier = DNS.identifier hd } }
     _   -> throwError $ _UpstreamUnsupportError # ("invalid question number " <> show (length qs))
 
-buildErrorResponse 
-    :: MonadIO m
-    => DNS.DNSMessage -> UpstreamError -> m DNS.DNSMessage
+buildErrorResponse :: MonadIO m => DNS.DNSMessage -> UpstreamError -> m DNS.DNSMessage
 buildErrorResponse DNS.DNSMessage{DNS.header = hd, DNS.question = qs} err = 
     pure DNS.defaultResponse 
         { DNS.header    = (DNS.header DNS.defaultResponse) 
@@ -189,7 +175,7 @@ buildErrorResponse DNS.DNSMessage{DNS.header = hd, DNS.question = qs} err =
 postprocess :: Applicative m => DNS.DNSMessage -> m DNS.DNSMessage
 postprocess = pure
     
-initializeUpstreamsEnv :: (MonadIO m, MonadReader AppEnv m, MonadError AppError m) => m ()
+initializeUpstreamsEnv :: AppProvision m => m ()
 initializeUpstreamsEnv = initializeDefaultUpstreams >> initializeUpstreamFromFiles
 
 initializeDefaultUpstreams :: (MonadIO m, MonadReader AppEnv m) => m ()
@@ -202,9 +188,9 @@ initializeDefaultUpstreams = do
 
 buildResolveConf :: Upstream -> DNS.ResolvConf
 buildResolveConf (Upstream ip mport) = DNS.defaultResolvConf
-    {DNS.resolvInfo = case mport of
-            Nothing   -> DNS.RCHostName (show ip)
-            Just port -> DNS.RCHostPort (show ip) port
+    { DNS.resolvInfo = case mport of
+        Nothing   -> DNS.RCHostName (show ip)
+        Just port -> DNS.RCHostPort (show ip) port
     }
 
 initializeUpstreamFromFiles 
