@@ -29,7 +29,10 @@ library
       HummingBird.App
       HummingBird.Config
       HummingBird.Event
+      HummingBird.Parser.ServerConfig
+      HummingBird.Router
       HummingBird.Server
+      HummingBird.Server.Common
       HummingBird.Server.TCP
       HummingBird.Server.UDP
       HummingBird.Types
@@ -45,6 +48,7 @@ library
       async
     , base >=4.7 && <5
     , bytestring
+    , bytestring-trie
     , containers
     , dns
     , iproute
@@ -55,7 +59,9 @@ library
     , mtl
     , network
     , optparse-applicative
+    , parsec
     , random
+    , scientific
     , stm
     , text
     , time
@@ -78,6 +84,7 @@ executable hummingbird
       async
     , base >=4.7 && <5
     , bytestring
+    , bytestring-trie
     , containers
     , dns
     , hummingbird
@@ -89,7 +96,9 @@ executable hummingbird
     , mtl
     , network
     , optparse-applicative
+    , parsec
     , random
+    , scientific
     , stm
     , text
     , time
@@ -112,6 +121,7 @@ test-suite hummingbird-test
       async
     , base >=4.7 && <5
     , bytestring
+    , bytestring-trie
     , containers
     , dns
     , hummingbird
@@ -123,7 +133,10 @@ test-suite hummingbird-test
     , mtl
     , network
     , optparse-applicative
+    , parsec
     , random
+    , raw-strings-qq
+    , scientific
     , stm
     , text
     , time

@@ -1,2 +1,4 @@
 .stack-work/
 *~
+*.log
+hummingbird.yaml
