@@ -179,7 +179,7 @@ initializeUpstreamsEnv = initializeDefaultUpstreams >> initializeUpstreamFromFil
 
 initializeDefaultUpstreams :: (MonadIO m, MonadReader AppEnv m) => m ()
 initializeDefaultUpstreams = do
-    upstreams     <- view (appEnvConfig . configUpstreams)
+    upstreams     <- view (appEnvConfig . configUpstream . upstreamConfigDefaults)
     seeds   <- liftIO $ mapM buildSeed upstreams
     router  <- view (appEnvUpstream . upstreamRouter)
     liftIO $ mapM_ (insert' router) seeds
@@ -192,7 +192,7 @@ initializeDefaultUpstreams = do
 
 initializeUpstreamFromFiles :: AppProvision m => m ()
 initializeUpstreamFromFiles = do
-    files  <- view (appEnvConfig . configUpstreamFiles)
+    files  <- view (appEnvConfig . configUpstream . upstreamConfigFiles)
     routes <- concat <$> mapM readRoutes files
     seeds  <- mapM buildSeeds routes
     router <- view (appEnvUpstream . upstreamRouter)

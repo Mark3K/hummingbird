@@ -56,7 +56,7 @@ buildConfig Params{..} = do
 
         setUpstreams    = case length upstreams of
             0           -> id
-            _           -> set configUpstreams [Upstream ip mp | (ip, mp) <- upstreams]
+            _           -> set (configUpstream . upstreamConfigDefaults) [Upstream ip mp | (ip, mp) <- upstreams]
 
         setEnableTcp    = if enableTcp
             then set configEnableTCP enableTcp
@@ -75,6 +75,7 @@ run vars = do
     case env' of
         Left    e -> putStrLn ("error building appenv: " <> show e)
         Right env -> do
+            putStrLn ("run with env: " <> show (env ^. appEnvConfig))
             rv <- runWithAppEnv env
             case rv of
                 Left  e -> putStrLn ("error run hummingbird: " <> show e)

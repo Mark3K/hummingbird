@@ -8,9 +8,9 @@
 
 module HummingBird.Upstream where
 
-import Control.Concurrent.Async (race)
+import Control.Concurrent.Async (async, waitAnyCancel)
 import Control.Exception (Exception)
-import Control.Lens (makeClassyPrisms, makeClassy, view, (#))
+import Control.Lens (makeClassyPrisms, makeClassy, view, (^.), (#))
 import Control.Monad.Error.Class (MonadError (throwError))
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.Logger.CallStack (MonadLogger, logDebug)
@@ -48,9 +48,9 @@ type UpstreamProvision c e m =
     )
 
 buildUpstreamEnv :: (MonadIO m) => Config -> m (Either UpstreamError UpstreamEnv)
-buildUpstreamEnv _config = do
+buildUpstreamEnv config = do
     routers  <- liftIO $ newIORef newRouter
-    concur   <- liftIO $ newIORef False
+    concur   <- liftIO $ newIORef (config ^. configUpstream . upstreamConfigConcurrent)
     pure $ Right $ UpstreamEnv routers concur
 
 -- | select a upstream from routers, if no upstream found, use the defaults
@@ -69,7 +69,7 @@ resolve q@(DNS.Question qd _) = do
 
 seqResolve :: UpstreamProvision c e m => [(Upstream, DNS.Resolver)] -> DNS.Question -> m DNS.DNSMessage
 seqResolve ((upstream, r):rs) q@(DNS.Question qd qt) = do
-    logDebug $ pack ("resolve " <> show qd <> " from " <> show upstream)
+    logDebug $ pack ("sequence resolve " <> show qd <> " from " <> show upstream)
     rv <- liftIO $ DNS.lookupRaw r qd qt
     case rv of
         Left  e -> if null rs
@@ -78,24 +78,12 @@ seqResolve ((upstream, r):rs) q@(DNS.Question qd qt) = do
         Right v -> pure v
 seqResolve [] (DNS.Question qd _) = throwError $ _UpstreamEmptyError # ("No upstream found for " <> show qd)
 
-concurResolve :: [(Upstream, DNS.Resolver)] -> DNS.Question -> m DNS.DNSMessage
-concurResolve = undefined
-    -- ior <- view upstreamResolvers
-    -- rs  <- liftIO $ readIORef ior
-    -- r   <- select rs
-    -- rv  <- liftIO $ DNS.lookupRaw r qd qt
-    -- case rv of
-    --     Left  e -> throwError $ _UpstreamDnsError # e
-    --     Right v -> pure v
+concurResolve :: UpstreamProvision c e m => [(Upstream, DNS.Resolver)] -> DNS.Question -> m DNS.DNSMessage
+concurResolve rs (DNS.Question qd qt) = do
+    logDebug $ pack ("concurrent resolve " <> show qd <> " from " <> show (map fst rs))
+    queries <- mapM (\(_, r) -> liftIO $ async $ DNS.lookupRaw r qd qt) rs
+    (_, rv) <- liftIO $ waitAnyCancel queries
+    case rv of
+        Left  e -> throwError $ _UpstreamDnsError # e
+        Right v -> pure v
     
-    -- where
-    --     select :: UpstreamProvision c e m => [DNS.Resolver] -> m DNS.Resolver
-    --     select xs = case length xs of
-    --         0 -> throwError $ _UpstreamEmptyError # "No upstream avaiable"
-    --         1 -> pure (head xs)
-    --         _ -> do
-    --             rgen    <- view upstreamRadomGen
-    --             gen     <- liftIO $ readIORef rgen
-    --             let (i, gen') = randomR (0, length xs - 1) gen
-    --             _       <- liftIO $ atomicWriteIORef rgen gen'
-    --             pure (xs !! i)
