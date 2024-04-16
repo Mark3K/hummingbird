@@ -8,6 +8,7 @@ import Network.DNS (Domain)
 import Network.Socket (PortNumber)
 import Text.ParserCombinators.Parsec
     ( Parser
+    , anyChar
     , char
     , optionMaybe
     , many
@@ -18,7 +19,7 @@ import Text.ParserCombinators.Parsec
     , parse
     , eof
     , (<|>)
-    , (<?>), anyChar
+    , (<?>)
     )
 
 import HummingBird.Types (Route (..), Upstream (..))
