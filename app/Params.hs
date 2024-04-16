@@ -1,5 +1,6 @@
-module Params where
+module Params (Params(..), params) where
 
+import Data.Bifunctor (first)
 import Data.IP (IP(..))
 import Network.DNS (Domain)
 import Network.Socket (PortNumber)
@@ -77,12 +78,10 @@ upstreamOption = option $ eitherReader $ \s -> case split ':' s of
         Left  _ -> Left "Invalid IP Address"
         Right v -> pure (v, Nothing)
 
-    [x,y]   -> case readEither x of
-        Left   _ -> Left "Invalid IP Address"
-        Right v0 -> case readEither y of
-            Left   _ -> Left "Invalid Port Number"
-            Right v1 -> pure (v0, v1)
-
+    [x,y]   -> do
+        ip <- first (\e -> "Invalid IP Address: " <> show e)  $ readEither x 
+        pn <- first (\e -> "Invalid Port Number: " <> show e) $ readEither y
+        pure (ip, Just pn)
     _       -> Left "Upstream should be (ip | ip:port)"
 
     where
