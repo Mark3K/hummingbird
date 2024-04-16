@@ -110,7 +110,7 @@ port :: Parser PortNumber
 port = many octDigit >>= toPort
     where
         toPort s = 
-            if i > 65535
+            if i <= 0 || i > 65535
                 then fail "Port number must be between 0 and 65535"
                 else pure i
             where i = toDecimal s

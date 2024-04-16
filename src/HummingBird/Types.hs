@@ -39,6 +39,6 @@ data UdpResponse = UdpResponse
     , urAddr        :: SockAddr
     } deriving (Show)
 
-data Upstream   = Upstream IP (Maybe PortNumber) deriving (Show, Eq)
+data Upstream   = Upstream IP (Maybe PortNumber) deriving (Show, Eq, Ord)
 
 data Route      = Route [Domain] Upstream deriving (Show, Eq)

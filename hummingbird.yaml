@@ -1,5 +1,5 @@
 upstreams:
-  - 8.8.8.8
+  - 1.1.1.1
 
 upstream_files:
   - /Users/sangluo/workspace/var/dnsmasq-china-list/accelerated-domains.china.conf

@@ -22,8 +22,7 @@ import Data.Text (pack)
 import qualified Network.DNS as DNS
 
 import HummingBird.Config
-import HummingBird.Router (Router)
-import qualified HummingBird.Router as Router
+import HummingBird.Router
 
 data UpstreamError
     = UpstreamDnsError          DNS.DNSError
@@ -50,7 +49,7 @@ type UpstreamProvision c e m =
 
 buildUpstreamEnv :: (MonadIO m) => Config -> m (Either UpstreamError UpstreamEnv)
 buildUpstreamEnv _config = do
-    routers  <- liftIO $ newIORef Router.new
+    routers  <- liftIO $ newIORef newRouter
     concur   <- liftIO $ newIORef False
     pure $ Right $ UpstreamEnv routers concur
 
@@ -59,7 +58,7 @@ resolve :: UpstreamProvision c e m => DNS.Question -> m DNS.DNSMessage
 resolve q@(DNS.Question qd _) = do
     router' <- view upstreamRouter
     router  <- liftIO $ readIORef router'
-    case Router.find router qd of
+    case findResolvers router qd of
         Nothing -> do
             throwError $ _UpstreamEmptyError # ("No upstreams found for " <> show qd)
         Just rs -> do
@@ -68,8 +67,9 @@ resolve q@(DNS.Question qd _) = do
             concur  <- liftIO $ readIORef concur'
             if concur then concurResolve rs q else seqResolve rs q
 
-seqResolve :: UpstreamProvision c e m => [DNS.Resolver] -> DNS.Question -> m DNS.DNSMessage
-seqResolve (r:rs) q@(DNS.Question qd qt) = do
+seqResolve :: UpstreamProvision c e m => [(Upstream, DNS.Resolver)] -> DNS.Question -> m DNS.DNSMessage
+seqResolve ((upstream, r):rs) q@(DNS.Question qd qt) = do
+    logDebug $ pack ("resolve " <> show qd <> " from " <> show upstream)
     rv <- liftIO $ DNS.lookupRaw r qd qt
     case rv of
         Left  e -> if null rs
@@ -78,7 +78,7 @@ seqResolve (r:rs) q@(DNS.Question qd qt) = do
         Right v -> pure v
 seqResolve [] (DNS.Question qd _) = throwError $ _UpstreamEmptyError # ("No upstream found for " <> show qd)
 
-concurResolve :: [DNS.Resolver] -> DNS.Question -> m DNS.DNSMessage
+concurResolve :: [(Upstream, DNS.Resolver)] -> DNS.Question -> m DNS.DNSMessage
 concurResolve = undefined
     -- ior <- view upstreamResolvers
     -- rs  <- liftIO $ readIORef ior

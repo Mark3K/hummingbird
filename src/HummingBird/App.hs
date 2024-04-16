@@ -43,8 +43,7 @@ import HummingBird.Event
 import HummingBird.Upstream
 import HummingBird.Server
 import HummingBird.Types
-import HummingBird.Router (Router)
-import qualified HummingBird.Router as Router
+import HummingBird.Router
 import HummingBird.Parser.ServerConfig (routesFromFile)
 
 data AppError 
@@ -180,11 +179,33 @@ initializeUpstreamsEnv = initializeDefaultUpstreams >> initializeUpstreamFromFil
 
 initializeDefaultUpstreams :: (MonadIO m, MonadReader AppEnv m) => m ()
 initializeDefaultUpstreams = do
-    ups     <- view (appEnvConfig . configUpstreams)
-    seeds   <- liftIO $ mapM (DNS.makeResolvSeed . buildResolveConf) ups
+    upstreams     <- view (appEnvConfig . configUpstreams)
+    seeds   <- liftIO $ mapM buildSeed upstreams
     router  <- view (appEnvUpstream . upstreamRouter)
-    liftIO $ mapM_ (insert router . ("", )) seeds
+    liftIO $ mapM_ (insert' router) seeds
+    where
+        buildSeed upstream = do
+            seed <- DNS.makeResolvSeed $ buildResolveConf upstream
+            pure (upstream, seed)
 
+        insert' router (upstream, seed) = insert router (Route [""] upstream, seed)
+
+initializeUpstreamFromFiles :: AppProvision m => m ()
+initializeUpstreamFromFiles = do
+    files  <- view (appEnvConfig . configUpstreamFiles)
+    routes <- concat <$> mapM readRoutes files
+    seeds  <- mapM buildSeeds routes
+    router <- view (appEnvUpstream . upstreamRouter)
+    liftIO $ mapM_ (insert router) seeds
+    where
+        readRoutes path = do
+            rs' <- liftIO $ routesFromFile path
+            case rs' of
+                Left   e -> throwError $ _AppConfigError # ("error parse routes from " <> path <> ": " <> show e)
+                Right rs -> pure rs
+
+        buildSeeds r@(Route _ upstream) = 
+            liftIO $ (r, ) <$> DNS.makeResolvSeed (buildResolveConf upstream)
 
 buildResolveConf :: Upstream -> DNS.ResolvConf
 buildResolveConf (Upstream ip mport) = DNS.defaultResolvConf
@@ -193,25 +214,6 @@ buildResolveConf (Upstream ip mport) = DNS.defaultResolvConf
         Just port -> DNS.RCHostPort (show ip) port
     }
 
-initializeUpstreamFromFiles :: AppProvision m => m ()
-initializeUpstreamFromFiles = do
-    files  <- view (appEnvConfig . configUpstreamFiles)
-    routes <- concat <$> mapM readroutes files
-    seeds  <- concat <$> mapM buildseeds routes
-    router <- view (appEnvUpstream . upstreamRouter)
-    liftIO $ mapM_ (insert router) seeds
-    where
-        readroutes path = do
-            rs' <- liftIO $ routesFromFile path
-            case rs' of
-                Left   e -> throwError $ _AppConfigError # ("error parse routes from " <> path <> ": " <> show e)
-                Right rs -> pure rs
-
-        buildseeds (Route domains upstream) = do
-            liftIO $ mapM (\(d, c) -> (d, ) <$> DNS.makeResolvSeed c) rs
-            where
-                rs = map (, buildResolveConf upstream) domains
-
-insert :: IORef Router -> (DNS.Domain, DNS.ResolvSeed) -> IO ()
-insert rr (dn, seed) = DNS.withResolver seed (\resolver -> 
-    atomicModifyIORef' rr (\router -> (Router.insert router dn resolver, ())))
+insert :: IORef Router -> (Route, DNS.ResolvSeed) -> IO ()
+insert rr (route, seed) = DNS.withResolver seed (\resolver -> 
+    atomicModifyIORef' rr (\router -> (insertRoute router route resolver, ())))
