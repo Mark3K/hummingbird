@@ -193,14 +193,12 @@ buildResolveConf (Upstream ip mport) = DNS.defaultResolvConf
         Just port -> DNS.RCHostPort (show ip) port
     }
 
-initializeUpstreamFromFiles 
-    :: (MonadIO m, MonadReader AppEnv m, MonadError AppError m)
-    => m ()
+initializeUpstreamFromFiles :: AppProvision m => m ()
 initializeUpstreamFromFiles = do
     files  <- view (appEnvConfig . configUpstreamFiles)
     routes <- concat <$> mapM readroutes files
     seeds  <- concat <$> mapM buildseeds routes
-    router  <- view (appEnvUpstream . upstreamRouter)
+    router <- view (appEnvUpstream . upstreamRouter)
     liftIO $ mapM_ (insert router) seeds
     where
         readroutes path = do

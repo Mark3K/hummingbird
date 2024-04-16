@@ -8,6 +8,7 @@
 
 module HummingBird.Upstream where
 
+import Control.Concurrent.Async (race)
 import Control.Exception (Exception)
 import Control.Lens (makeClassyPrisms, makeClassy, view, (#))
 import Control.Monad.Error.Class (MonadError (throwError))
