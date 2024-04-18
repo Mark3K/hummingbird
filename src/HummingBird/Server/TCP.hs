@@ -1,6 +1,7 @@
 {-# LANGUAGE ConstraintKinds        #-}
 {-# LANGUAGE FlexibleContexts       #-}
 {-# LANGUAGE LambdaCase             #-}
+{-# LANGUAGE OverloadedStrings      #-}
 {-# LANGUAGE RecordWildCards        #-}
 {-# LANGUAGE ScopedTypeVariables    #-}
 {-# LANGUAGE TemplateHaskell        #-}
@@ -14,13 +15,13 @@ import Control.Lens (makeClassyPrisms, makeClassy, view, (^.), (#))
 import Control.Monad (forever, when)
 import Control.Monad.Except (MonadError(throwError))
 import Control.Monad.IO.Class (MonadIO (liftIO))
-import Control.Monad.Logger.CallStack (MonadLogger, logDebug, logError, logWarn)
 import Control.Monad.Reader (MonadReader)
 import Control.Monad.Trans.Control (MonadBaseControl)
 
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Data.Text (pack)
+
+import Katip (KatipContext, Severity(..), logTM, showLS)
 
 import qualified Network.DNS as DNS
 import Network.Socket 
@@ -49,7 +50,7 @@ makeClassy ''TcpServerEnv
 
 type TcpServerProvision c e m =
     ( MonadIO m
-    , MonadLogger m
+    , KatipContext m
     , MonadBaseControl IO m
     , MonadReader c m, HasTcpServerEnv c
     , MonadError e m, AsTcpServerError e
@@ -74,17 +75,17 @@ serve ch = do
         Left             s -> throwError $ _TcpSocketError # s
         Right (sock, addr) -> do
             _ <- liftIO $ listen sock 5
-            logDebug $ pack ("TCP serve at " <> show addr)
+            $(logTM) DebugS ("TCP serve at " <> showLS addr)
 
             respCh <- liftIO newTChanIO
             _ <- fork (forever $ sender respCh)
             forever $ do
                 (csock, caddr) <- liftIO $ accept sock
-                logDebug $ pack ("A new TCP client " <> show caddr)
+                $(logTM) DebugS ("A new TCP client " <> showLS caddr)
                 forkFinally 
                     (catch (process csock ch respCh)
                         (\(se :: SomeException) -> do
-                                logError $ pack ("error processing tcp request: " <> show se)
+                                $(logTM) ErrorS ("error processing tcp request: " <> showLS se)
                                 throwError $ _TcpSocketError # show se)
                     )
                     (\_ -> closeSock csock)
@@ -94,7 +95,7 @@ serve ch = do
             msg <- liftIO $ DNS.receiveVC sock
             if DNS.qOrR (DNS.flags $ DNS.header msg) == DNS.QR_Query
             then do
-                logDebug $ pack ("TCP DNS message: " <> show msg)
+                $(logTM) DebugS ("TCP DNS message: " <> showLS msg)
 
                 reqsref  <- view tcpServerEnvRequests
                 let _id = (DNS.identifier . DNS.header) msg
@@ -115,14 +116,14 @@ serve ch = do
                     Dead -> pure ()
                 liftIO $ atomically $ modifyTVar reqsref $ \reqs -> Map.delete _id reqs
             else do
-                logError $ pack ("NOT a query: " <> show msg) 
+                $(logTM) ErrorS ("NOT a query: " <> showLS msg) 
 
         sender tc = do
             resp <- liftIO $ atomically $ readTChan tc
             case resp of
-                ResponseUdp               _ -> logWarn $ pack "TCP server received UDP response"
+                ResponseUdp               _ -> $(logTM) WarningS "TCP server received UDP response"
                 ResponseTcp TcpResponse{..} -> do
-                    logDebug $ pack ("TCP server response: " <> show trMessage)
+                    $(logTM) DebugS ("TCP server response: " <> showLS trMessage)
                     reqsref  <- view tcpServerEnvRequests
                     let _id = (DNS.identifier . DNS.header) trMessage
                     liftIO $ atomically $ do

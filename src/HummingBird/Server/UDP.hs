@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleInstances      #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE LambdaCase             #-}
+{-# LANGUAGE OverloadedStrings      #-}
 {-# LANGUAGE RecordWildCards        #-}
 {-# LANGUAGE ScopedTypeVariables    #-}
 {-# LANGUAGE TemplateHaskell        #-}
@@ -16,12 +17,10 @@ import Control.Lens (makeClassy, makeClassyPrisms, view, (^.), (#))
 import Control.Monad (forever)
 import Control.Monad.Except (MonadError(throwError))
 import Control.Monad.IO.Class (MonadIO (liftIO))
-import Control.Monad.Logger.CallStack
 import Control.Monad.Reader (MonadReader)
 import Control.Monad.Trans.Control (MonadBaseControl)
 
-import Data.Text (pack)
-
+import Katip (KatipContext, Severity(..), logTM, showLS)
 import qualified Network.DNS as DNS
 import Network.Socket
 import Network.Socket.ByteString (recvFrom, sendAllTo)
@@ -45,7 +44,7 @@ makeClassy ''UdpServerEnv
 
 type UdpServerProvision c e m = 
     ( MonadIO m
-    , MonadLogger m
+    , KatipContext m
     , MonadBaseControl IO m
     , MonadReader c m, HasUdpServerEnv c
     , MonadError e m, AsUdpServerError e
@@ -66,31 +65,31 @@ serve ch = do
     case rv of
         Left             s -> throwError $ _UdpSocketError # s
         Right (sock, addr) -> do
-            logDebug $ pack ("UDP serve at " <> show addr)
+            $(logTM) DebugS ("UDP serve at " <> showLS addr)
             respCh <- liftIO newTChanIO
             _ <- fork (forever $ sender sock respCh)
             forever $ catch (process sock respCh) 
                             (\(se :: SomeException) -> do
-                                logError $ pack ("unexpected error: " <> show se)
+                                $(logTM) ErrorS ("unexpected error: " <> showLS se)
                                 throwError (_UdpSocketError # show se)
                                 )
     where
         process sock sch = do
             (raw, addr) <- liftIO $ recvFrom sock (fromIntegral DNS.maxUdpSize)
-            logDebug $ pack ("raw message received: " <> show addr)
+            $(logTM) DebugS ("raw message received: " <> showLS addr)
             case parse raw of
                 Left  err -> do
-                    logError $ pack ("dns error: " <> show err)
+                    $(logTM) ErrorS ("dns error: " <> showLS err)
                 Right msg -> do
-                    logDebug $ pack ("UDP DNS message: " <> show msg)
+                    $(logTM) DebugS ("UDP DNS message: " <> showLS msg)
                     liftIO $ atomically $ writeTChan ch (RequestEvent $ RequestContext msg (Just addr) sch)
             
         sender sock sch = do
             resp <- liftIO $ atomically $ readTChan sch
             case resp of
-                ResponseTcp               _ -> logWarn $ pack "UDP server received TCP response"
+                ResponseTcp               _ -> $(logTM) WarningS "UDP server received TCP response"
                 ResponseUdp UdpResponse{..} -> do
-                    logDebug $ pack ("UDP server response: " <> show urMessage)
+                    $(logTM) DebugS ("UDP server response: " <> showLS urMessage)
                     liftIO $ sendAllTo sock (DNS.encode urMessage) urAddr
 
         parse raw = do

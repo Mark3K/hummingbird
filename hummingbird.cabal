@@ -52,10 +52,10 @@ library
     , containers
     , dns
     , iproute
+    , katip
     , lens
     , lifted-base
     , monad-control
-    , monad-logger
     , mtl
     , network
     , optparse-applicative
@@ -89,10 +89,10 @@ executable hummingbird
     , dns
     , hummingbird
     , iproute
+    , katip
     , lens
     , lifted-base
     , monad-control
-    , monad-logger
     , mtl
     , network
     , optparse-applicative
@@ -126,10 +126,10 @@ test-suite hummingbird-test
     , dns
     , hummingbird
     , iproute
+    , katip
     , lens
     , lifted-base
     , monad-control
-    , monad-logger
     , mtl
     , network
     , optparse-applicative

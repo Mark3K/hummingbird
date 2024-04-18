@@ -18,10 +18,10 @@ import Control.Exception.Lifted (catch, SomeException)
 import Control.Lens (makeClassy, makeClassyPrisms, view, (^.), (#))
 import Control.Monad (when, void)
 import Control.Monad.IO.Class (MonadIO)
-import Control.Monad.Logger.CallStack (logDebug, logError)
 
 import Data.Bifunctor (bimap)
-import Data.Text (pack)
+
+import Katip (Severity(..), logTM, showLS)
 
 import HummingBird.Config
 import HummingBird.Event
@@ -75,9 +75,9 @@ buildServerEnv config = do
 
 serve :: ServerProvision c e m => TChan Event -> m ()
 serve ch = do
-    logDebug "begin to start servers ..."
+    $(logTM) DebugS "begin to start servers ..."
     _   <- fork $ catch (UDP.serve ch) (\(e :: SomeException) -> do
-        logError $ pack ("UDP server error: " <> show e))
+        $(logTM) ErrorS ("UDP server error: " <> showLS e))
     tcp <- view serverEnvEnableTcp
     when tcp $ void $ fork $ catch (TCP.serve ch) (\(e :: SomeException) -> do
-        logError $ pack ("TCP server error: " <> show e))
+        $(logTM) ErrorS ("TCP server error: " <> showLS e))

@@ -2,15 +2,8 @@
 {-# LANGUAGE QuasiQuotes       #-}
 {-# LANGUAGE RecordWildCards   #-}
 
-import Control.Lens ((.~), (^.), set)
-import Control.Monad.Logger (LogLevel(..), LogSource, LoggingT (runLoggingT), filterLogger, defaultOutput)
 import Data.ByteString (ByteString)
-import Data.Text (Text)
 import qualified Data.Yaml as Y
-import Data.Yaml (FromJSON(..), (.:))
-import Data.IP (IP(..))
-import Data.Maybe (fromMaybe)
-import Network.Socket (PortNumber)
 import Text.RawString.QQ
 
 import HummingBird.Config

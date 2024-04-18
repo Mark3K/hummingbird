@@ -1,25 +1,26 @@
 {-# LANGUAGE FlexibleContexts       #-}
 {-# LANGUAGE LambdaCase             #-}
-{-# LANGUAGE ScopedTypeVariables    #-}
+{-# LANGUAGE OverloadedStrings      #-}
 {-# LANGUAGE RecordWildCards        #-}
+{-# LANGUAGE ScopedTypeVariables    #-}
+{-# LANGUAGE TemplateHaskell        #-}
 
 module HummingBird.Server.Common where
 
 import Control.Exception.Lifted (catch, bracketOnError, SomeException)
 import Control.Monad.IO.Class (MonadIO (liftIO))
-import Control.Monad.Logger.CallStack (MonadLogger, logDebug)
 import Control.Monad.Trans.Control (MonadBaseControl)
 
-import Data.Text (pack)
+import Katip (KatipContext, Severity(..), logTM, showLS)
 
 import Network.Socket 
 
 openSock 
-    :: (MonadIO m, MonadLogger m, MonadBaseControl IO m)
+    :: (KatipContext m, MonadBaseControl IO m)
     => SocketType -> HostName -> ServiceName -> m (Either String (Socket, SockAddr))
 openSock socktyp host port = do
     addrs <- liftIO $ getAddrInfo (Just hints) (Just host) (Just port)
-    logDebug $ pack ("TCP available address: " <> show addrs)
+    $(logTM) DebugS ("TCP available address: " <> showLS addrs)
     tryAddrs addrs
     where
         hints = defaultHints

@@ -2,14 +2,20 @@ module Params (Params(..), params) where
 
 import Data.Bifunctor (first)
 import Data.IP (IP(..))
+
+import Katip (Severity(..))
+
 import Network.DNS (Domain)
 import Network.Socket (PortNumber)
+
 import Options.Applicative
+
 import Text.Read (readEither)
 
 data Params = Params
     { configPath    :: Maybe String
     , logFile       :: Maybe String
+    , logLevel      :: Maybe Severity
     , listenAddr    :: Maybe IP
     , listenPort    :: Maybe PortNumber
     , upstreams     :: [(IP, Maybe PortNumber)]
@@ -24,6 +30,7 @@ params :: Parser Params
 params = Params 
     <$> optional configPathParser
     <*> optional logFileParser
+    <*> optional logLevelParser
     <*> optional listenAddrParser
     <*> optional listenPortParser
     <*> upstreamsParser
@@ -47,6 +54,21 @@ logFileParser = strOption
     <> metavar "<PATH>" 
     <> help "The log file path" 
     )
+
+logLevelOption :: Mod OptionFields Severity -> Parser Severity
+logLevelOption = option $ eitherReader $ \s -> pure $ go s
+    where
+        go "debug"     = DebugS
+        go "info"      = InfoS
+        go "warning"   = WarningS
+        go "error"     = ErrorS
+        go _           = ErrorS
+
+logLevelParser :: Parser Severity
+logLevelParser = logLevelOption
+    (  long "log-level"
+    <> metavar "<debug|info|warning|error>"
+    <> help "The log level")
 
 listenAddrParser :: Parser IP
 listenAddrParser = readopt "Invalid IP Address"

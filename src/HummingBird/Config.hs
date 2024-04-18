@@ -11,6 +11,7 @@ module HummingBird.Config
     -- LogConfig accessors
     , logConfigFile
     , logConfigLevel
+    , logConfigVerbosity
     -- UpstreamConfig accessors
     , upstreamConfigDefaults
     , upstreamConfigFiles
@@ -27,7 +28,6 @@ module HummingBird.Config
     ) where
 
 import Control.Lens (makeLenses, (^.))
-import Control.Monad.Logger (LogLevel(..))
 
 import Data.Bifunctor (first)
 import Data.IP (IP)
@@ -37,19 +37,11 @@ import Data.Text (unpack, split)
 import Data.Maybe (fromMaybe)
 import Data.Yaml (FromJSON(..), (.:?))
 
+import Katip (Severity(..), Verbosity(..))
 import Network.Socket (PortNumber)
 import Text.Read (readEither)
 
 import HummingBird.Types
-
-instance FromJSON LogLevel where
-    parseJSON (Y.String v) = case v of
-        "debug" -> pure LevelDebug
-        "info"  -> pure LevelInfo
-        "warn"  -> pure LevelWarn
-        "error" -> pure LevelError
-        _       -> fail ("Invalid log level: " <> unpack v)
-    parseJSON _ = mempty
 
 instance FromJSON IP where
     parseJSON (Y.String v) = case readEither $ unpack v of
@@ -77,22 +69,25 @@ instance FromJSON Upstream where
     parseJSON _          = mempty
 
 data LogConfig = LogConfig
-    { _logConfigLevel :: LogLevel
-    , _logConfigFile  :: Maybe FilePath
+    { _logConfigLevel       :: Severity
+    , _logConfigVerbosity   :: Verbosity
+    , _logConfigFile        :: Maybe FilePath
     } deriving (Show, Eq)
 makeLenses ''LogConfig
 
 defaultLogConfig :: LogConfig
 defaultLogConfig = LogConfig
-    { _logConfigLevel   = LevelInfo
-    , _logConfigFile    = Nothing
+    { _logConfigLevel       = InfoS
+    , _logConfigVerbosity   = V0
+    , _logConfigFile        = Nothing
     }
 
 instance FromJSON LogConfig where
     parseJSON (Y.Object v) = do
         level <- fromMaybe (defaultLogConfig ^. logConfigLevel) <$> (v .:?  "level")
+        verb  <- fromMaybe (defaultLogConfig ^. logConfigVerbosity) <$> (v .:? "verbosity")
         file  <- v .:?  "file"
-        pure $ LogConfig level file
+        pure $ LogConfig level verb file
     parseJSON           _  = mempty
 
 data UpstreamConfig = UpstreamConfig
@@ -139,7 +134,7 @@ defaultConfig = Config
 
 instance FromJSON Config where
     parseJSON (Y.Object v) = do
-        logs        <- fromMaybe defaultLogConfig <$> v .:? "log"
+        logs        <- fromMaybe (defaultConfig ^. configLog)        <$> v .:? "log"
         addr        <- fromMaybe (defaultConfig ^. configListenAddr) <$> v .:? "listen_addr"
         port        <- fromMaybe (defaultConfig ^. configListenPort) <$> v .:? "listen_port"
         enableTCP   <- fromMaybe (defaultConfig ^. configEnableTCP)  <$> v .:? "enable_tcp"

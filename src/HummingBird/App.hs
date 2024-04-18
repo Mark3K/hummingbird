@@ -16,8 +16,17 @@
 
 module HummingBird.App 
     ( app
+    , runApp
     , buildAppEnv
+
     , appEnvConfig
+    , appEnvLogger
+
+    , loggerEnv
+    , loggerContexts
+    , loggerNamespace
+
+    , AppT(..)
     , AppEnv(..)
     , AppError(..)
     ) where
@@ -25,18 +34,19 @@ module HummingBird.App
 import Control.Concurrent.Lifted (fork)
 import Control.Concurrent.STM (newTChanIO, TChan, atomically, readTChan, writeTChan)
 import Control.Exception (Exception)
-import Control.Lens (makeClassy, makeClassyPrisms, view, (#))
+import Control.Lens (makeClassy, makeClassyPrisms, view, over, (^.), (#))
 import Control.Monad (forever)
-import Control.Monad.Except (MonadError(throwError, catchError))
-import Control.Monad.Logger.CallStack (MonadLogger, logInfo, logDebug, logError)
-import Control.Monad.Reader (MonadIO (liftIO), MonadReader)
-import Control.Monad.Trans.Control (MonadBaseControl)
+import Control.Monad.Base (MonadBase (liftBase), liftBaseDefault)
+import Control.Monad.Except (MonadError(throwError, catchError), ExceptT, runExceptT)
+import Control.Monad.Reader (MonadIO (liftIO), MonadReader (local), ReaderT (runReaderT), MonadTrans(lift))
+import Control.Monad.Trans.Control
 
 import Data.Bifunctor (bimap)
 import Data.IORef (IORef, atomicModifyIORef')
-import Data.Text (pack)
 
+import Katip
 import qualified Network.DNS as DNS
+import System.IO (stdout)
 
 import HummingBird.Config
 import HummingBird.Event
@@ -55,24 +65,51 @@ makeClassyPrisms ''AppError
 
 instance Exception AppError
 
+data Logger = Logger 
+    { _loggerEnv        :: LogEnv
+    , _loggerContexts   :: LogContexts
+    , _loggerNamespace  :: Namespace
+    }
+makeClassy ''Logger
+
+buildLogger :: (MonadIO m) => Config -> m Logger
+buildLogger config = do
+    scribe <- liftIO buildScribe
+    env    <- liftIO $ do
+        ev <- initLogEnv "HummingBird" "production"
+        registerScribe "main" scribe defaultScribeSettings ev
+    pure $ Logger env mempty "App"
+    where
+        logLevel = config ^. configLog . logConfigLevel
+        logVerb  = config ^. configLog . logConfigVerbosity
+        logFile  = config ^. configLog . logConfigFile
+
+        buildScribe = case logFile of
+            Just path -> mkFileScribe path (permitItem logLevel) logVerb
+            Nothing   -> mkHandleScribe ColorIfTerminal stdout (permitItem logLevel) logVerb
+
 data AppEnv = AppEnv 
     { _appEnvConfig         :: Config 
     , _appEnvUpstream       :: UpstreamEnv
     , _appEnvServer         :: ServerEnv
+    , _appEnvLogger         :: Logger
     }
 makeClassy ''AppEnv
 
 buildAppEnv :: (MonadIO m) => Config -> m (Either AppError AppEnv)
 buildAppEnv config = do
-    upstream <- buildUpstreamEnv config
-    server <- buildServerEnv config
-    pure $ bimap (_AppUpstreamError #) build upstream 
+    logEnv   <- buildLogger         config
+    upstream <- buildUpstreamEnv    config
+    server   <- buildServerEnv      config
+
+    pure $ bimap (_AppUpstreamError #) (build logEnv) upstream 
          >>= (\b -> bimap (_AppServerError #) b server)
     where
-        build u s = AppEnv
+        build l u s = AppEnv
             { _appEnvConfig     = config
             , _appEnvUpstream   = u
             , _appEnvServer     = s
+            , _appEnvLogger     = l
             }
 
 instance HasServerEnv AppEnv where
@@ -89,7 +126,7 @@ instance AsUpstreamError AppError where
 
 type AppProvision m = 
     ( MonadIO m
-    , MonadLogger m
+    , KatipContext m
     , MonadBaseControl IO m
     , MonadReader AppEnv m 
     , MonadError AppError m
@@ -97,15 +134,15 @@ type AppProvision m =
 
 app :: AppProvision m =>  m ()
 app = do
-    logInfo "initialize server enviroment"
+    $(logTM) InfoS "initialize server enviroment"
     initializeUpstreamsEnv
-    logInfo "start humming bird server"
+    $(logTM) InfoS "start humming bird server"
     ch  <- liftIO newTChanIO
     serve ch
-    logInfo "start event loop"
+    $(logTM) InfoS "start event loop"
     forever $ eventLoop ch `catchError` \case
         AppUpstreamError e -> do
-            logError $ pack ("upstream error: " <> show e)
+            $(logTM) ErrorS ("upstream error: " <> showLS e)
             pure ()
         e                  -> throwError e
 
@@ -115,17 +152,17 @@ eventLoop ch = do
     case event of
          RequestEvent ctx -> do
             tid <- fork (handleRequest ctx)
-            logDebug $ pack ("start thread " <> show tid <> " to handle request")
+            $(logTM) InfoS ("start thread " <> showLS tid <> " to handle request")
          -- TODO
          TimeoutEvent systime timeout -> undefined
          ListenerExit reason -> undefined
 
 handleRequest :: AppProvision m => RequestContext -> m ()
 handleRequest RequestContext{..} = do
-    logDebug $ pack ("handle request event: " <> show requestContextMessage)
+    $(logTM) InfoS ("handle request event: " <> showLS requestContextMessage)
     resp <- handle requestContextMessage `catchError` \case 
         AppUpstreamError e -> do
-            logError $ pack ("unexpected error: " <> show e)
+            $(logTM) ErrorS ("unexpected error: " <> showLS e)
             buildErrorResponse requestContextMessage e
         e                  -> throwError e
     rc   <- case requestContextAddr of
@@ -217,3 +254,41 @@ buildResolveConf (Upstream ip mport) = DNS.defaultResolvConf
 insert :: IORef Router -> (Route, DNS.ResolvSeed) -> IO ()
 insert rr (route, seed) = DNS.withResolver seed (\resolver -> 
     atomicModifyIORef' rr (\router -> (insertRoute router route resolver, ())))
+
+newtype AppT m a = AppT
+    { unAppT :: ExceptT AppError (ReaderT AppEnv m) a 
+    } deriving (Functor, Applicative, Monad, MonadIO, MonadError AppError, MonadReader AppEnv)
+
+runApp :: AppEnv -> AppT m a -> m (Either AppError a)
+runApp env m = runReaderT (runExceptT $ unAppT m) env
+
+instance MonadTrans AppT where
+    lift = AppT . lift .lift
+
+instance MonadBase b m => MonadBase b (AppT m) where
+    liftBase = liftBaseDefault
+
+instance MonadTransControl AppT where
+  type StT AppT a = StT (ExceptT AppError) (StT (ReaderT AppEnv) a)
+  liftWith = defaultLiftWith2 AppT unAppT
+
+  restoreT = defaultRestoreT2 AppT
+
+instance MonadBaseControl b m => MonadBaseControl b (AppT m) where
+  type StM (AppT m) a = ComposeSt AppT m a
+  liftBaseWith = defaultLiftBaseWith
+  restoreM = defaultRestoreM
+
+instance (MonadIO m) => Katip (AppT m) where
+    getLogEnv = view (appEnvLogger . loggerEnv)
+
+    localLogEnv f (AppT m) = AppT $ local (over (appEnvLogger . loggerEnv) f) m
+
+instance (MonadIO m) => KatipContext (AppT m) where
+    getKatipContext = view (appEnvLogger . loggerContexts)
+
+    localKatipContext f (AppT m) = AppT $ local (over (appEnvLogger . loggerContexts) f) m
+
+    getKatipNamespace = view (appEnvLogger . loggerNamespace)
+
+    localKatipNamespace f (AppT m) = AppT $ local (over (appEnvLogger . loggerNamespace) f) m

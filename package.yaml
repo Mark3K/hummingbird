@@ -27,7 +27,6 @@ dependencies:
 - lifted-base
 - monad-control
 - mtl
-- monad-logger
 - network
 - optparse-applicative
 - random
@@ -43,6 +42,7 @@ dependencies:
 - bytestring-trie
 - parsec
 - async
+- katip
 
 ghc-options:
 - -Wall

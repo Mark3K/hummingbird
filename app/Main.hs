@@ -1,23 +1,23 @@
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE FlexibleInstances          #-}
+{-# LANGUAGE MultiParamTypeClasses      #-}
+{-# LANGUAGE RecordWildCards            #-}
+{-# LANGUAGE TypeFamilies               #-}
+{-# LANGUAGE UndecidableInstances       #-}
 
 module Main (main) where
 
 import Control.Lens ((.~), (^.), set)
-import Control.Monad.Except (ExceptT,runExceptT)
-import Control.Monad.Reader (ReaderT,runReaderT)
-import Control.Monad.Logger (LogLevel(..), LogSource, LoggingT (runLoggingT), filterLogger, defaultOutput)
-
+import Katip
 import Options.Applicative
-import System.IO (withFile, IOMode (AppendMode), hSetBuffering, BufferMode (LineBuffering), stdout)
 
 import HummingBird
 import Params
 
-verboseToLogLevel :: Int -> LogLevel
-verboseToLogLevel 0 = LevelError
-verboseToLogLevel 1 = LevelWarn
-verboseToLogLevel 2 = LevelInfo
-verboseToLogLevel _ = LevelDebug
+toVerbosity :: Int -> Verbosity 
+toVerbosity 0 = V0
+toVerbosity 1 = V1
+toVerbosity 2 = V2
+toVerbosity _ = V3
 
 buildConfig :: Params -> IO (Either AppError Config)
 buildConfig Params{..} = do
@@ -26,6 +26,7 @@ buildConfig Params{..} = do
         Left  e -> pure $ Left (AppConfigError e)
         Right c -> pure $ Right 
             ( setLogLevel
+            $ setLogVerbosity
             $ setLogFile
             $ setUpstreams
             $ setRefuseAny
@@ -34,8 +35,12 @@ buildConfig Params{..} = do
             $ setPort c
             )
     where
-        setLogLevel = if verbose > 0
-            then set (configLog . logConfigLevel) (verboseToLogLevel verbose)
+        setLogLevel     = case logLevel of
+            Nothing     -> id
+            Just v      -> set (configLog . logConfigLevel) v
+
+        setLogVerbosity = if verbose > 0
+            then set (configLog . logConfigVerbosity) (toVerbosity verbose)
             else id
 
         setLogFile      = case logFile of
@@ -75,39 +80,10 @@ run vars = do
     case env' of
         Left    e -> putStrLn ("error building appenv: " <> show e)
         Right env -> do
-            putStrLn ("run with env: " <> show (env ^. appEnvConfig))
-            rv <- runWithAppEnv env
+            rv <- runApp env app
             case rv of
                 Left  e -> putStrLn ("error run hummingbird: " <> show e)
                 Right _ -> pure ()
-
-runWithAppEnv :: AppEnv -> IO (Either AppError ())
-runWithAppEnv env = case logfile of
-    Just   path -> withFile path AppendMode $ \h -> 
-        hSetBuffering h LineBuffering >> 
-        runLoggingT (filterLogger withLogLevel (runApp env app)) (defaultOutput h)
-
-    Nothing     -> 
-        runLoggingT (filterLogger withLogLevel (runApp env app)) (defaultOutput stdout)
-    where
-        runApp  :: AppEnv 
-                -> ExceptT AppError (ReaderT AppEnv (LoggingT IO)) a 
-                -> LoggingT IO (Either AppError a)
-        runApp ev = flip runReaderT ev . runExceptT
-
-        withLogLevel :: LogSource -> LogLevel -> Bool
-        withLogLevel _ = isLogLevelValid loglevel
-
-        loglevel = env ^. appEnvConfig . configLog . logConfigLevel
-        logfile  = env ^. appEnvConfig . configLog . logConfigFile
-
-isLogLevelValid :: LogLevel -> LogLevel -> Bool
-isLogLevelValid setting target = case setting of
-    LevelDebug      -> True
-    LevelInfo       -> target /= LevelDebug
-    LevelWarn       -> target `notElem` [LevelDebug, LevelInfo]
-    LevelError      -> target `notElem` [LevelDebug, LevelInfo, LevelWarn]
-    LevelOther    _ -> False
 
 main :: IO ()
 main = run =<< execParser opts
