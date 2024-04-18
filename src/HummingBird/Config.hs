@@ -84,32 +84,40 @@ defaultLogConfig = LogConfig
 
 instance FromJSON LogConfig where
     parseJSON (Y.Object v) = do
-        level <- fromMaybe (defaultLogConfig ^. logConfigLevel) <$> (v .:?  "level")
+        level <- fromMaybe (defaultLogConfig ^. logConfigLevel)     <$> (v .:?  "level")
         verb  <- fromMaybe (defaultLogConfig ^. logConfigVerbosity) <$> (v .:? "verbosity")
         file  <- v .:?  "file"
         pure $ LogConfig level verb file
     parseJSON           _  = mempty
 
 data UpstreamConfig = UpstreamConfig
-    { _upstreamConfigDefaults   :: [Upstream]
-    , _upstreamConfigFiles      :: [FilePath]
-    , _upstreamConfigConcurrent :: Bool
+    { _upstreamConfigDefaults       :: [Upstream]
+    , _upstreamConfigFiles          :: [FilePath]
+    , _upstreamConfigConcurrent     :: Bool
+    , _upstreamConfigCacheEnable    :: Bool
+    , _upstreamConfigCacheTTL       :: Int
     } deriving (Show, Eq)
 makeLenses ''UpstreamConfig
 
 defaultUpstreamConfig :: UpstreamConfig
 defaultUpstreamConfig = UpstreamConfig
-    { _upstreamConfigDefaults   = []
-    , _upstreamConfigFiles      = []
-    , _upstreamConfigConcurrent = False
+    { _upstreamConfigDefaults       = []
+    , _upstreamConfigFiles          = []
+    , _upstreamConfigConcurrent     = False
+    , _upstreamConfigCacheEnable    = True
+    , _upstreamConfigCacheTTL       = 30
     }
 
 instance FromJSON UpstreamConfig where
     parseJSON (Y.Object v) = do
-        defaults    <- fromMaybe (defaultUpstreamConfig ^. upstreamConfigDefaults)  <$> (v .:? "defaults")
-        files       <- fromMaybe (defaultUpstreamConfig ^. upstreamConfigFiles)     <$> (v .:? "files")
-        concur      <- fromMaybe (defaultUpstreamConfig ^. upstreamConfigConcurrent)<$> (v .:? "concurrent")
-        pure $ UpstreamConfig defaults files concur
+        defaults    <- parse upstreamConfigDefaults     "defaults"
+        files       <- parse upstreamConfigFiles        "files"
+        concur      <- parse upstreamConfigConcurrent   "concurrent"
+        cache       <- parse upstreamConfigCacheEnable  "cache_enable"
+        ttl         <- parse upstreamConfigCacheTTL     "cache_ttl"
+        pure $ UpstreamConfig defaults files concur cache ttl
+        where
+            parse lens key = fromMaybe (defaultUpstreamConfig ^. lens) <$> (v .:? key)
     parseJSON _ = mempty
 
 data Config = Config 

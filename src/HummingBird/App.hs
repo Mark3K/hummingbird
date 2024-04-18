@@ -40,11 +40,35 @@ import Control.Monad.Base (MonadBase (liftBase), liftBaseDefault)
 import Control.Monad.Except (MonadError(throwError, catchError), ExceptT, runExceptT)
 import Control.Monad.Reader (MonadIO (liftIO), MonadReader (local), ReaderT (runReaderT), MonadTrans(lift))
 import Control.Monad.Trans.Control
+    ( defaultLiftBaseWith
+    , defaultLiftWith2
+    , defaultRestoreM
+    , defaultRestoreT2
+    , ComposeSt
+    , MonadTransControl(..)
+    , MonadBaseControl(..)
+    )
 
 import Data.Bifunctor (bimap)
 import Data.IORef (IORef, atomicModifyIORef')
 
 import Katip
+    ( defaultScribeSettings
+    , initLogEnv
+    , permitItem
+    , registerScribe
+    , showLS
+    , logTM
+    , mkFileScribe
+    , mkHandleScribe
+    , Severity(ErrorS, InfoS)
+    , Katip(..)
+    , LogEnv
+    , Namespace
+    , KatipContext(..)
+    , LogContexts
+    , ColorStrategy(ColorIfTerminal)
+    )
 import qualified Network.DNS as DNS
 import System.IO (stdout)
 

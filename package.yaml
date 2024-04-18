@@ -43,6 +43,7 @@ dependencies:
 - parsec
 - async
 - katip
+- psqueues
 
 ghc-options:
 - -Wall

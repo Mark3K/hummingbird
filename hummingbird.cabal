@@ -27,6 +27,7 @@ library
   exposed-modules:
       HummingBird
       HummingBird.App
+      HummingBird.Cache
       HummingBird.Config
       HummingBird.Event
       HummingBird.Parser.ServerConfig
@@ -60,6 +61,7 @@ library
     , network
     , optparse-applicative
     , parsec
+    , psqueues
     , random
     , scientific
     , stm
@@ -97,6 +99,7 @@ executable hummingbird
     , network
     , optparse-applicative
     , parsec
+    , psqueues
     , random
     , scientific
     , stm
@@ -134,6 +137,7 @@ test-suite hummingbird-test
     , network
     , optparse-applicative
     , parsec
+    , psqueues
     , random
     , raw-strings-qq
     , scientific
