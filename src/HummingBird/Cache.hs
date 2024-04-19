@@ -1,144 +1,92 @@
-{-# LANGUAGE BangPatterns       #-}
-{-# LANGUAGE LambdaCase         #-}
+{-# LANGUAGE FlexibleContexts   #-}
 {-# LANGUAGE RecordWildCards    #-}
 
-module HummingBird.Cache 
-    ( Cache (..)
-    , CacheSettings (..)
-    , mkCache
-    , newTTLCache
-    , insertTTLCache
-    , lookupTTLCache
-    ) where
+module HummingBird.Cache where
 
-import Control.Concurrent (killThread, ThreadId, forkIO, threadDelay)
-import Control.Exception (mask_)
-import Control.Monad (join)
+import Control.Concurrent.Lifted (fork, threadDelay, ThreadId)
+import Control.Exception.Lifted (mask_)
+import Control.Monad.IO.Class (MonadIO(liftIO))
+import Control.Monad.Trans.Control (MonadBaseControl)
 
-import Data.Foldable (for_, Foldable (foldl'))
-import Data.IORef (newIORef, readIORef, atomicModifyIORef', IORef, writeIORef)
+import Data.Foldable (foldl')
+import Data.IORef (IORef, atomicModifyIORef', writeIORef, readIORef, newIORef)
 import Data.OrdPSQ (OrdPSQ)
 import qualified Data.OrdPSQ as PSQ
-import Data.Time (getCurrentTime, UTCTime)
+import Data.Time (UTCTime, getCurrentTime, nominalDiffTimeToSeconds, diffUTCTime, addUTCTime, secondsToNominalDiffTime)
 
-import Network.DNS (Domain, TYPE, RData)
+import Network.DNS (Domain, TYPE, TTL, RData)
+import Control.Monad (join)
 
-data CacheSettings store item = CacheSettings
-    { cacheAction       :: store -> IO (store -> store)
-    -- ^ The action to perform on a store
-    , cacheRefreshFreq  :: !Int
-    -- ^ Number of microseconds to delay between calls `cacheAction`
-    , cacheCons         :: item -> store -> store
-    -- ^ Add an item into a store 
-    , cacheNull         :: store -> Bool
-    -- ^ Check if a store is empty, in which case the worker thread
-    -- will shut down.
-    , cacheEmpty        :: store
-    -- ^ An empty store
+type K  = (Domain, TYPE)
+type V  = [RData]
+type S  = OrdPSQ K UTCTime V
+
+data Cache = Cache
+    { _cacheState   :: IORef (Maybe S)
+    , _cacheTid     :: IORef (Maybe ThreadId)
+    , _cacheMaxSize :: Int
     }
 
-data Cache store item = Cache
-    { cacheAdd  :: item -> IO ()
-    , cacheRead :: IO store
-    -- | Stopping the cache thread if exists.
-    --   The current store is returned.
-    , cacheStop :: IO store
-    , cacheKill :: IO ()
-    }
+mkCache :: (MonadIO m) => Int -> m Cache
+mkCache size = do
+    state <- liftIO $ newIORef Nothing
+    tid   <- liftIO $ newIORef Nothing
+    pure $ Cache state tid size
 
-data CacheState store = NoCache       -- ^ No cache thread
-                      | Store !store -- ^ The current cache
-
-mkCache :: CacheSettings store item -> IO (Cache store item)
-mkCache settings@CacheSettings{..} = do
-    stateRef <- newIORef NoCache
-    tidRef   <- newIORef Nothing
-    pure Cache 
-        { cacheAdd  = add settings stateRef tidRef
-        , cacheRead = readRef stateRef
-        , cacheStop = stop stateRef
-        , cacheKill = kill tidRef
-        }
+insertCache :: (MonadIO m, MonadBaseControl IO m) => K -> V -> TTL -> Cache -> m ()
+insertCache k v ttl c@Cache{..} = do
+    now <- liftIO getCurrentTime
+    let expire = addSeconds (fromIntegral ttl) now
+    mask_ $ liftIO $ do join $ atomicModifyIORef' _cacheState (cons expire)
     where
-        readRef stateRef = do
-            cs <- readIORef stateRef
-            case cs of
-                NoCache  -> pure cacheEmpty
-                Store s -> pure s
+        cons expire Nothing  =  let q = PSQ.insert k expire v PSQ.empty
+                                in (Just q, spawn c)
+        cons expire (Just s) =  let q = PSQ.insert k expire v s
+                                in (Just q, pure ())
 
-        stop stateRef = atomicModifyIORef' stateRef $ \case 
-            NoCache -> (NoCache, cacheEmpty)
-            Store s -> (Store cacheEmpty, s)
+        spawn c@Cache {..} = do
+            tid <- fork $ refresh c
+            liftIO $ writeIORef _cacheTid $ Just tid
 
-        kill tidRef = do
-            tid <- readIORef tidRef
-            for_ tid killThread
-        
-add :: CacheSettings store item 
-    -> IORef (CacheState store) 
-    -> IORef (Maybe ThreadId) 
-    -> item 
-    -> IO ()
-add settings@CacheSettings{..} stateRef tidRef item = 
-    mask_ $ do join (atomicModifyIORef' stateRef cons)
-    where
-        cons NoCache    =   let s = cacheCons item cacheEmpty
-                            in (Store s, spawn settings stateRef tidRef)
-        cons (Store s)  =   let s' = cacheCons item s
-                            in (Store s', pure ())
-        
-spawn   :: CacheSettings store item 
-        -> IORef (CacheState store) 
-        -> IORef (Maybe ThreadId)
-        -> IO ()
-spawn settings stateRef tidRef = do
-    tid <- forkIO $ refresh settings stateRef tidRef
-    writeIORef tidRef $ Just tid
-
-refresh :: CacheSettings store item 
-        -> IORef (CacheState store) 
-        -> IORef (Maybe ThreadId)
-        -> IO ()
-refresh settings@CacheSettings{..} stateRef tidRef = do
-    threadDelay cacheRefreshFreq
-
-    store   <- atomicModifyIORef' stateRef swapWithEmpty
-    !merge  <- cacheAction store
-    join $ atomicModifyIORef' stateRef (check merge)
-    where
-        swapWithEmpty NoCache   = error "Unexpected NoCache"
-        swapWithEmpty (Store s) = (Store cacheEmpty, s)
-
-        check _ NoCache         = error "Unexpected NoCache"
-        check merge (Store s)   = if cacheNull s'
-            -- If there is no cache, refresh thread is terminated.
-            then (NoCache, writeIORef tidRef Nothing)
-            -- If there are caches, carry on.
-            else (Store s', refresh settings stateRef tidRef)
-            where s' = merge s
-
-type Key        = (Domain, TYPE)
-type Store      = OrdPSQ Key UTCTime [RData]
-type TTLCache   = Cache Store (Key, UTCTime, [RData]) 
-
-newTTLCache :: Int -> IO TTLCache 
-newTTLCache secs = mkCache CacheSettings
-    { cacheAction       = prune
-    , cacheRefreshFreq  = secs * 1000000
-    , cacheCons         = \(k, tim, v) psq -> PSQ.insert k tim v psq
-    , cacheNull         = PSQ.null
-    , cacheEmpty        = PSQ.empty
-    }
-    where
-        prune oldpsq = do
-            tim <- getCurrentTime
-            let (_, pruned) = PSQ.atMostView tim oldpsq
-            pure $ \newpsq -> foldl' ins pruned $ PSQ.toList newpsq
+        refresh c@Cache {..} = do
+            now     <- liftIO getCurrentTime
+            store   <- liftIO $ atomicModifyIORef' _cacheState swapWithEmpty
+            merge   <- prune now store
+            item    <- liftIO $ do join $ atomicModifyIORef' _cacheState (check merge)
+            case item of
+                Nothing         -> pure ()
+                Just (_, e, _)  -> do
+                    threadDelay (seconds e now)
+                    refresh c
             where
-                ins psq (k,p,v) = PSQ.insert k p v psq
+                swapWithEmpty Nothing   = error "Swap with no cache"
+                swapWithEmpty (Just s)  = (Nothing, s)
 
-insertTTLCache :: Key -> UTCTime -> [RData] -> TTLCache -> IO ()
-insertTTLCache = undefined
+                prune now s = do
+                    let (_, pruned) = PSQ.atMostView now s
+                    pure $ \q -> foldl' f pruned $ PSQ.toList q
+                    where 
+                        f psq (k, p, v) = PSQ.insert k p v psq
 
-lookupTTLCache :: Key -> TTLCache -> IO (Maybe (UTCTime, [RData]))
-lookupTTLCache = undefined
+                check _ Nothing         = error "merge with no cache"
+                check merge (Just s')   = if PSQ.null s''
+                    then (Nothing, do writeIORef _cacheTid Nothing; pure Nothing)
+                    else (Just s'', pure $ PSQ.findMin s'')
+                    where s'' = merge s'
+
+lookupCache :: (MonadIO m) => K -> Cache -> m (Maybe (TTL, V))
+lookupCache k Cache{..} = do
+    state <- liftIO $ readIORef _cacheState
+    case state of
+        Nothing -> pure Nothing
+        Just s  -> case PSQ.lookup k s of
+            Nothing      -> pure Nothing
+            Just (e, v)  -> do
+                now <- liftIO getCurrentTime
+                pure $ Just (fromIntegral $ seconds e now, v)
+
+seconds :: UTCTime -> UTCTime -> Int
+seconds a b = floor $ nominalDiffTimeToSeconds (diffUTCTime a b)
+
+addSeconds :: Int -> UTCTime -> UTCTime
+addSeconds secs = addUTCTime (secondsToNominalDiffTime $ fromIntegral secs)

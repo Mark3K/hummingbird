@@ -96,6 +96,7 @@ data UpstreamConfig = UpstreamConfig
     , _upstreamConfigConcurrent     :: Bool
     , _upstreamConfigCacheEnable    :: Bool
     , _upstreamConfigCacheTTL       :: Int
+    , _upstreamConfigCacheSize      :: Int
     } deriving (Show, Eq)
 makeLenses ''UpstreamConfig
 
@@ -106,6 +107,7 @@ defaultUpstreamConfig = UpstreamConfig
     , _upstreamConfigConcurrent     = False
     , _upstreamConfigCacheEnable    = True
     , _upstreamConfigCacheTTL       = 30
+    , _upstreamConfigCacheSize      = 32
     }
 
 instance FromJSON UpstreamConfig where
@@ -115,7 +117,8 @@ instance FromJSON UpstreamConfig where
         concur      <- parse upstreamConfigConcurrent   "concurrent"
         cache       <- parse upstreamConfigCacheEnable  "cache_enable"
         ttl         <- parse upstreamConfigCacheTTL     "cache_ttl"
-        pure $ UpstreamConfig defaults files concur cache ttl
+        size        <- parse upstreamConfigCacheSize    "cache_size"
+        pure $ UpstreamConfig defaults files concur cache ttl size
         where
             parse lens key = fromMaybe (defaultUpstreamConfig ^. lens) <$> (v .:? key)
     parseJSON _ = mempty
