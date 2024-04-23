@@ -96,7 +96,7 @@ data Logger = Logger
     }
 makeClassy ''Logger
 
-buildLogger :: (MonadIO m) => Config -> m Logger
+buildLogger :: (MonadIO m) => LogConfig -> m Logger
 buildLogger config = do
     scribe <- liftIO buildScribe
     env    <- liftIO $ do
@@ -104,9 +104,9 @@ buildLogger config = do
         registerScribe "main" scribe defaultScribeSettings ev
     pure $ Logger env mempty "App"
     where
-        logLevel = config ^. configLog . logConfigLevel
-        logVerb  = config ^. configLog . logConfigVerbosity
-        logFile  = config ^. configLog . logConfigFile
+        logLevel = config ^. logConfigLevel
+        logVerb  = config ^. logConfigVerbosity
+        logFile  = config ^. logConfigFile
 
         buildScribe = case logFile of
             Just path -> mkFileScribe path (permitItem logLevel) logVerb
@@ -122,8 +122,8 @@ makeClassy ''AppEnv
 
 buildAppEnv :: (MonadIO m) => Config -> m (Either AppError AppEnv)
 buildAppEnv config = do
-    logEnv   <- buildLogger         config
-    upstream <- buildUpstreamEnv    config
+    logEnv   <- buildLogger         (config ^. configLog)
+    upstream <- buildUpstreamEnv    (config ^. configUpstream)
     server   <- buildServerEnv      config
 
     pure $ bimap (_AppUpstreamError #) (build logEnv) upstream 
@@ -186,8 +186,8 @@ handleRequest RequestContext{..} = do
     $(logTM) InfoS ("handle request event: " <> showLS requestContextMessage)
     resp <- handle requestContextMessage `catchError` \case 
         AppUpstreamError e -> do
-            $(logTM) ErrorS ("unexpected error: " <> showLS e)
-            buildErrorResponse requestContextMessage e
+            $(logTM) ErrorS ("unexpected upstream error: " <> showLS e)
+            onUpstreamError requestContextMessage e
         e                  -> throwError e
     rc   <- case requestContextAddr of
         Nothing     -> pure $ ResponseTcp $ TcpResponse resp
@@ -196,24 +196,8 @@ handleRequest RequestContext{..} = do
     where
         handle r = preprocess r >>= process >>= postprocess
 
-preprocess :: AppProvision m => DNS.DNSMessage -> m DNS.DNSMessage
-preprocess r@DNS.DNSMessage{ DNS.question = qs } = do
-    refuseAny <- view (appEnvConfig . configRefuseAny)
-    if refuseAny
-        then    pure r { DNS.question = filter nonany qs }
-        else    pure r
-    
-    where nonany DNS.Question { DNS.qtype = typ } = typ /= DNS.ANY
-
-process :: AppProvision m => DNS.DNSMessage -> m DNS.DNSMessage
-process DNS.DNSMessage{DNS.header = hd, DNS.question = qs} = case qs of
-    [q] -> do
-        rc <- resolve q
-        pure rc { DNS.header = (DNS.header rc) { DNS.identifier = DNS.identifier hd } }
-    _   -> throwError $ _UpstreamUnsupportError # ("invalid question number " <> show (length qs))
-
-buildErrorResponse :: MonadIO m => DNS.DNSMessage -> UpstreamError -> m DNS.DNSMessage
-buildErrorResponse DNS.DNSMessage{DNS.header = hd, DNS.question = qs} err = 
+onUpstreamError :: MonadIO m => DNS.DNSMessage -> UpstreamError -> m DNS.DNSMessage
+onUpstreamError DNS.DNSMessage{DNS.header = hd, DNS.question = qs} err = 
     pure DNS.defaultResponse 
         { DNS.header    = (DNS.header DNS.defaultResponse) 
             { DNS.identifier = DNS.identifier hd
@@ -231,7 +215,19 @@ buildErrorResponse DNS.DNSMessage{DNS.header = hd, DNS.question = qs} err =
             DNS.FormatError         -> DNS.FormatErr
             DNS.ServerFailure       -> DNS.ServFail
             _                       -> DNS.BadRCODE 
+
+preprocess :: AppProvision m => DNS.DNSMessage -> m DNS.DNSMessage
+preprocess r@DNS.DNSMessage{ DNS.question = qs } = do
+    refuseAny <- view (appEnvConfig . configRefuseAny)
+    if refuseAny
+        then    pure r { DNS.question = filter nonany qs }
+        else    pure r
     
+    where nonany DNS.Question { DNS.qtype = typ } = typ /= DNS.ANY
+
+process :: AppProvision m => DNS.DNSMessage -> m DNS.DNSMessage
+process = resolve
+
 postprocess :: Applicative m => DNS.DNSMessage -> m DNS.DNSMessage
 postprocess = pure
     

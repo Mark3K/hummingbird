@@ -1,10 +1,11 @@
-{-# LANGUAGE ConstraintKinds    #-}
-{-# LANGUAGE FlexibleContexts   #-}
-{-# LANGUAGE FlexibleInstances  #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE OverloadedStrings  #-}
-{-# LANGUAGE TemplateHaskell    #-}
-{-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE ConstraintKinds        #-}
+{-# LANGUAGE FlexibleContexts       #-}
+{-# LANGUAGE FlexibleInstances      #-}
+{-# LANGUAGE MultiParamTypeClasses  #-}
+{-# LANGUAGE OverloadedStrings      #-}
+{-# LANGUAGE RecordWildCards        #-}
+{-# LANGUAGE TemplateHaskell        #-}
+{-# LANGUAGE UndecidableInstances   #-}
 
 module HummingBird.Upstream where
 
@@ -14,18 +15,21 @@ import Control.Lens (makeClassyPrisms, makeClassy, view, (^.), (#))
 import Control.Monad.Error.Class (MonadError (throwError))
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.Reader (MonadReader)
+import Control.Monad.Trans.Control (MonadBaseControl)
 
 import Data.IORef (IORef, readIORef, newIORef)
 
 import Katip (KatipContext, Severity(..), logTM, showLS)
 
-import qualified Network.DNS as DNS
+import Network.DNS
 
 import HummingBird.Config
 import HummingBird.Router
+import HummingBird.Cache
 
 data UpstreamError
-    = UpstreamDnsError          DNS.DNSError
+    = UpstreamDnsError          DNSError
+    | UpstreamInvalidQuery      String
     | UpstreamUnsupportError    String
     | UpstreamEmptyError        String
     | UpstreamUnknownError      String
@@ -37,27 +41,98 @@ instance Exception UpstreamError
 data UpstreamEnv = UpstreamEnv
     { _upstreamRouter   :: IORef Router
     , _upstreamConcur   :: IORef Bool
+    , _upstreamCache    :: Maybe Cache
     }
 makeClassy ''UpstreamEnv
 
 type UpstreamProvision c e m = 
     ( MonadIO m
     , KatipContext m
+    , MonadBaseControl IO m
     , MonadReader c m, HasUpstreamEnv c
     , MonadError e m, AsUpstreamError e
     )
 
-buildUpstreamEnv :: (MonadIO m) => Config -> m (Either UpstreamError UpstreamEnv)
+buildUpstreamEnv :: (MonadIO m) => UpstreamConfig -> m (Either UpstreamError UpstreamEnv)
 buildUpstreamEnv config = do
-    routers  <- liftIO $ newIORef newRouter
-    concur   <- liftIO $ newIORef (config ^. configUpstream . upstreamConfigConcurrent)
-    pure $ Right $ UpstreamEnv routers concur
+    routers <- liftIO $ newIORef newRouter
+    concur  <- liftIO $ newIORef (config ^. upstreamConfigConcurrent)
+    cache   <- if cacheConfig ^. cacheConfigEnable
+        then Just <$> mkCache 
+            (cacheConfig ^. cacheConfigMaxSize) 
+            (cacheConfig ^. cacheConfigMaxTTL)
+            (cacheConfig ^. cacheConfigMinTTL)
+        else pure Nothing
+    pure $ Right $ UpstreamEnv routers concur cache
+    where
+        cacheConfig = config ^. upstreamConfigCache
 
--- | select a upstream from routers, if no upstream found, use the defaults
-resolve :: UpstreamProvision c e m => DNS.Question -> m DNS.DNSMessage
-resolve q@(DNS.Question qd _) = do
+resolve :: UpstreamProvision c e m => DNSMessage -> m DNSMessage
+resolve query = do
+    cache <- view upstreamCache
+    case cache of
+        Nothing -> resolveFromUpstream query
+        Just  c -> do
+            v <- lookupCache key c
+            case v of
+                Nothing             -> do
+                    response <- resolveFromUpstream query
+                    case (rcode . flags . header) response of
+                        NoErr -> do
+                            _        <- insertCache response c
+                            pure response
+                        _     -> pure response
+
+                Just (ttl, item)    -> do
+                    $(logTM) InfoS ("[TTL="<> showLS ttl <> "] Cache hit on query <" <> showLS query <> ">: " <> showLS item)
+                    pure $ withRRs item $ toResponse query
+    where
+        key = buildKey query
+
+toResponse :: DNSMessage -> DNSMessage
+toResponse DNSMessage{..} = case op header of
+    QR_Query    -> DNSMessage
+        { header        = DNSHeader 
+            { identifier = identifier header
+            , flags      = defaultDNSFlags
+                { qOrR          = QR_Response
+                , recDesired    = rd header
+                , chkDisable    = cd header
+                }
+            }
+        , ednsHeader    = NoEDNS
+        , question      = question
+        , answer        = []
+        , authority     = []
+        , additional    = []
+        }
+    QR_Response -> error "try to build response from response"
+
+    where 
+        cd DNSHeader{..} = chkDisable flags 
+        rd DNSHeader{..} = recDesired flags
+        op DNSHeader{..} = qOrR       flags
+
+withRRs :: Item -> DNSMessage -> DNSMessage
+withRRs Item {..} msg = msg 
+    { header        = header' { flags = flags' 
+        { authenData    = _itemHeaderAD 
+        , authAnswer    = True
+        , recAvailable  = _itemHeaderRD
+        }}
+    , answer        = _itemAnswer
+    , authority     = _itemAuthority
+    , additional    = _itemAdditional
+    }
+    where
+        header' = header msg
+        flags'  = flags header'
+
+resolveFromUpstream :: UpstreamProvision c e m => DNSMessage -> m DNSMessage
+resolveFromUpstream q = do
     router' <- view upstreamRouter
     router  <- liftIO $ readIORef router'
+    qd      <- qName q
     case findResolvers router qd of
         Nothing -> do
             throwError $ _UpstreamEmptyError # ("No upstreams found for " <> show qd)
@@ -66,22 +141,38 @@ resolve q@(DNS.Question qd _) = do
             concur' <- view upstreamConcur
             concur  <- liftIO $ readIORef concur'
             if concur then concurResolve rs q else seqResolve rs q
+            
+qName :: UpstreamProvision c e m => DNSMessage -> m Domain 
+qName DNSMessage {question = qs} = case qs of
+    []      -> throwError $ _UpstreamInvalidQuery # "query is empty"
+    [q]     -> pure $ qname q
+    (_:_)   -> throwError $ _UpstreamInvalidQuery # "query is more than 1"
 
-seqResolve :: UpstreamProvision c e m => [(Upstream, DNS.Resolver)] -> DNS.Question -> m DNS.DNSMessage
-seqResolve ((upstream, r):rs) q@(DNS.Question qd qt) = do
+qType :: UpstreamProvision c e m => DNSMessage -> m TYPE
+qType DNSMessage {question = qs} = case qs of
+    []      -> throwError $ _UpstreamInvalidQuery # "query is empty"
+    [q]     -> pure $ qtype q
+    (_:_)   -> throwError $ _UpstreamInvalidQuery # "query is more than 1"
+
+seqResolve :: UpstreamProvision c e m => [(Upstream, Resolver)] -> DNSMessage -> m DNSMessage
+seqResolve ((upstream, r):rs) q = do
+    qd <- qName q
+    qt <- qType q
     $(logTM) DebugS ("sequence resolve " <> showLS qd <> " from " <> showLS upstream)
-    rv <- liftIO $ DNS.lookupRaw r qd qt
+    rv <- liftIO $ lookupRaw r qd qt
     case rv of
         Left  e -> if null rs
             then throwError $ _UpstreamDnsError # e
             else seqResolve rs q
         Right v -> pure v
-seqResolve [] (DNS.Question qd _) = throwError $ _UpstreamEmptyError # ("No upstream found for " <> show qd)
+seqResolve [] _ = throwError $ _UpstreamEmptyError # "No upstream"
 
-concurResolve :: UpstreamProvision c e m => [(Upstream, DNS.Resolver)] -> DNS.Question -> m DNS.DNSMessage
-concurResolve rs (DNS.Question qd qt) = do
+concurResolve :: UpstreamProvision c e m => [(Upstream, Resolver)] -> DNSMessage -> m DNSMessage
+concurResolve rs q = do
+    qd <- qName q
+    qt <- qType q
     $(logTM) DebugS ("concurrent resolve " <> showLS qd <> " from " <> showLS (map fst rs))
-    queries <- mapM (\(_, r) -> liftIO $ async $ DNS.lookupRaw r qd qt) rs
+    queries <- mapM (\(_, r) -> liftIO $ async $ lookupRaw r qd qt) rs
     (_, rv) <- liftIO $ waitAnyCancel queries
     case rv of
         Left  e -> throwError $ _UpstreamDnsError # e

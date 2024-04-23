@@ -7,6 +7,7 @@ module HummingBird.Config
     ( defaultConfig
     , Config (..)
     , LogConfig (..)
+    , UpstreamConfig (..)
     , Upstream (..)
     -- LogConfig accessors
     , logConfigFile
@@ -16,6 +17,12 @@ module HummingBird.Config
     , upstreamConfigDefaults
     , upstreamConfigFiles
     , upstreamConfigConcurrent
+    , upstreamConfigCache
+    -- CacheConfig accessors
+    , cacheConfigEnable
+    , cacheConfigMaxTTL
+    , cacheConfigMinTTL
+    , cacheConfigMaxSize
     -- Config accessors
     , configLog
     , configListenAddr
@@ -90,13 +97,38 @@ instance FromJSON LogConfig where
         pure $ LogConfig level verb file
     parseJSON           _  = mempty
 
+data CacheConfig = CacheConfig 
+    { _cacheConfigEnable    :: Bool
+    , _cacheConfigMaxTTL    :: Int
+    , _cacheConfigMinTTL    :: Int
+    , _cacheConfigMaxSize   :: Int
+    } deriving (Show, Eq)
+makeLenses ''CacheConfig
+
+defaultCacheConfig :: CacheConfig
+defaultCacheConfig = CacheConfig
+    { _cacheConfigEnable    = True
+    , _cacheConfigMaxTTL    = 300
+    , _cacheConfigMinTTL    = 30
+    , _cacheConfigMaxSize   = 32
+    }
+
+instance FromJSON CacheConfig where
+    parseJSON (Y.Object v) = do
+        enable      <- parse cacheConfigEnable  "enable"
+        maxTTL      <- parse cacheConfigMaxTTL  "max_ttl"
+        minTTL      <- parse cacheConfigMinTTL  "min_ttl"
+        maxSize     <- parse cacheConfigMaxSize "max_size"
+        pure $ CacheConfig enable maxTTL minTTL maxSize
+        where
+            parse lens key = fromMaybe (defaultCacheConfig ^. lens) <$> (v .:? key)
+    parseJSON _ = mempty
+
 data UpstreamConfig = UpstreamConfig
     { _upstreamConfigDefaults       :: [Upstream]
     , _upstreamConfigFiles          :: [FilePath]
     , _upstreamConfigConcurrent     :: Bool
-    , _upstreamConfigCacheEnable    :: Bool
-    , _upstreamConfigCacheTTL       :: Int
-    , _upstreamConfigCacheSize      :: Int
+    , _upstreamConfigCache          :: CacheConfig
     } deriving (Show, Eq)
 makeLenses ''UpstreamConfig
 
@@ -105,9 +137,7 @@ defaultUpstreamConfig = UpstreamConfig
     { _upstreamConfigDefaults       = []
     , _upstreamConfigFiles          = []
     , _upstreamConfigConcurrent     = False
-    , _upstreamConfigCacheEnable    = True
-    , _upstreamConfigCacheTTL       = 30
-    , _upstreamConfigCacheSize      = 32
+    , _upstreamConfigCache          = defaultCacheConfig
     }
 
 instance FromJSON UpstreamConfig where
@@ -115,10 +145,8 @@ instance FromJSON UpstreamConfig where
         defaults    <- parse upstreamConfigDefaults     "defaults"
         files       <- parse upstreamConfigFiles        "files"
         concur      <- parse upstreamConfigConcurrent   "concurrent"
-        cache       <- parse upstreamConfigCacheEnable  "cache_enable"
-        ttl         <- parse upstreamConfigCacheTTL     "cache_ttl"
-        size        <- parse upstreamConfigCacheSize    "cache_size"
-        pure $ UpstreamConfig defaults files concur cache ttl size
+        cache       <- parse upstreamConfigCache        "cache"
+        pure $ UpstreamConfig defaults files concur cache
         where
             parse lens key = fromMaybe (defaultUpstreamConfig ^. lens) <$> (v .:? key)
     parseJSON _ = mempty
