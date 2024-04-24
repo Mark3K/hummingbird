@@ -79,7 +79,7 @@ resolve query = do
                     response <- resolveFromUpstream query
                     case (rcode . flags . header) response of
                         NoErr -> do
-                            _        <- insertCache response c
+                            _ <- insertCache response c
                             pure response
                         _     -> pure response
 

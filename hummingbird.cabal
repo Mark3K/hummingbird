@@ -38,6 +38,7 @@ library
       HummingBird.Server.UDP
       HummingBird.Types
       HummingBird.Upstream
+      HummingBird.Utils
   other-modules:
       Paths_hummingbird
   autogen-modules:

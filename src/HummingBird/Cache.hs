@@ -25,28 +25,23 @@ module HummingBird.Cache
     , lookupCache
     ) where
 
-import Control.Concurrent.Lifted (fork, threadDelay, ThreadId)
+import Control.Concurrent.Lifted (fork, threadDelay, ThreadId, killThread)
 import Control.Exception.Lifted (mask_)
 import Control.Lens (makeLenses)
 import Control.Monad (join)
 import Control.Monad.IO.Class (MonadIO(liftIO))
 import Control.Monad.Trans.Control (MonadBaseControl)
 
-import Data.Foldable (foldl')
+import Data.Foldable (foldl', for_)
 import Data.IORef (IORef, atomicModifyIORef', writeIORef, readIORef, newIORef)
 import Data.OrdPSQ (OrdPSQ)
 import qualified Data.OrdPSQ as PSQ
-import Data.Time 
-    ( UTCTime
-    , getCurrentTime
-    , nominalDiffTimeToSeconds
-    , diffUTCTime
-    , addUTCTime
-    , secondsToNominalDiffTime
-    )
+import Data.Time (UTCTime, getCurrentTime)
 
 import Katip (KatipContext, showLS, logTM, Severity (InfoS))
 import Network.DNS
+
+import HummingBird.Utils
 
 data Key  = Key 
     { _keyDomain    :: Domain
@@ -99,25 +94,40 @@ mkCache size maxTTL minTTL = do
     pure $ Cache state tid size (fromIntegral maxTTL) (fromIntegral minTTL)
 
 insertCache :: (KatipContext m, MonadBaseControl IO m) => DNSMessage -> Cache -> m ()
-insertCache msg c@Cache{..} = do
+insertCache msg@DNSMessage{..} c = if null (answer <> authority <> additional)
+        then pure () 
+        else insertCache' msg c
+
+insertCache' :: (KatipContext m, MonadBaseControl IO m) => DNSMessage -> Cache -> m ()
+insertCache' msg c@Cache{..} = do
     $(logTM) InfoS ("cache insert: " <> showLS msg)
     $(logTM) InfoS ("cache item: " <> showLS val)
     now <- liftIO getCurrentTime
-    let expire = addSeconds (fromIntegral ttl) now
+    let expire = addUTCTimeSeconds (fromIntegral ttl) now
     mask_ $ liftIO $ do join $ atomicModifyIORef' _cacheState (cons expire)
     where
         key = buildKey msg
         val = buildItem msg
         ttl = max (min (itemTTL val) _cacheMaxTTL) _cacheMinTTL
-
+        
         cons expire Nothing  =  let q = PSQ.insert key expire val PSQ.empty
                                 in (Just q, spawn)
         cons expire (Just s) =  let a = if PSQ.size s > _cacheMaxSize then PSQ.deleteMin s else s
                                     b = PSQ.insert key expire val a
-                                in (Just b, pure ())
+                                in (Just b, respawn expire)
         spawn = do
             tid <- fork $ refreshCache c
             liftIO $ writeIORef _cacheTid $ Just tid
+
+        respawn expire = do
+            state <- readIORef _cacheState
+            case state >>= PSQ.findMin >>= \(_, e, _) -> pure $ diffUTCTimeInSeconds expire e < 0 of
+                Nothing     -> pure ()
+                Just False  -> pure ()
+                Just True   -> do
+                    tid <- liftIO $ readIORef _cacheTid
+                    for_ tid killThread
+                    spawn
 
 refreshCache :: (MonadIO m, MonadBaseControl IO m) => Cache -> m ()
 refreshCache c@Cache {..} = do
@@ -128,7 +138,7 @@ refreshCache c@Cache {..} = do
     case item of
         Nothing         -> pure ()
         Just (_, e, _)  -> do
-            threadDelay (seconds e now)
+            threadDelay $ diffUTCTimeInSeconds e now * 1000 * 1000
             refreshCache c
     where
         swapWithEmpty Nothing   = error "Swap with empty cache"
@@ -153,13 +163,7 @@ lookupCache k Cache{..} = do
     pure $ withTTL now =<< PSQ.lookup k =<< state
     where
         withTTL now (e, v) = if ttl <= 0 then Nothing else Just (fromIntegral ttl, v)
-            where ttl = seconds e now
+            where ttl = diffUTCTimeInSeconds e now
         
 itemTTL :: Item -> TTL
 itemTTL Item {..} = minimum $ map rrttl (_itemAnswer <> _itemAuthority <> _itemAdditional)
-
-seconds :: UTCTime -> UTCTime -> Int
-seconds a b = floor $ nominalDiffTimeToSeconds (diffUTCTime a b)
-
-addSeconds :: Int -> UTCTime -> UTCTime
-addSeconds secs = addUTCTime (secondsToNominalDiffTime $ fromIntegral secs)

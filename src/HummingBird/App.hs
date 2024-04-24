@@ -33,7 +33,7 @@ module HummingBird.App
 
 import Control.Concurrent.Lifted (fork)
 import Control.Concurrent.STM (newTChanIO, TChan, atomically, readTChan, writeTChan)
-import Control.Exception (Exception)
+import Control.Exception.Lifted (Exception, catch, SomeException)
 import Control.Lens (makeClassy, makeClassyPrisms, view, over, (^.), (#))
 import Control.Monad (forever)
 import Control.Monad.Base (MonadBase (liftBase), liftBaseDefault)
@@ -79,6 +79,7 @@ import HummingBird.Server
 import HummingBird.Types
 import HummingBird.Router
 import HummingBird.Parser.ServerConfig (routesFromFile)
+import Data.Time (getCurrentTime, diffUTCTime)
 
 data AppError 
     = AppServerError    ServerError
@@ -183,40 +184,32 @@ eventLoop ch = do
 
 handleRequest :: AppProvision m => RequestContext -> m ()
 handleRequest RequestContext{..} = do
-    $(logTM) InfoS ("handle request event: " <> showLS requestContextMessage)
-    resp <- handle requestContextMessage `catchError` \case 
-        AppUpstreamError e -> do
-            $(logTM) ErrorS ("unexpected upstream error: " <> showLS e)
-            onUpstreamError requestContextMessage e
-        e                  -> throwError e
+    $(logTM) InfoS ("handle request " <> showLS rid)
+    begin <- liftIO getCurrentTime
+    resp <- catch (handle requestContextMessage) $ \(e :: SomeException) -> do 
+        $(logTM) ErrorS ("unexpected error: " <> showLS e)
+        onException requestContextMessage
     rc   <- case requestContextAddr of
         Nothing     -> pure $ ResponseTcp $ TcpResponse resp
         Just addr   -> pure $ ResponseUdp $ UdpResponse resp addr
     liftIO $ atomically $ writeTChan requestContextChannel rc
+    end <- liftIO getCurrentTime
+    $(logTM) InfoS ("request " <> showLS rid <> " costs " <> showLS (diffUTCTime end begin))
     where
+        rid = (DNS.identifier . DNS.header) requestContextMessage
         handle r = preprocess r >>= process >>= postprocess
 
-onUpstreamError :: MonadIO m => DNS.DNSMessage -> UpstreamError -> m DNS.DNSMessage
-onUpstreamError DNS.DNSMessage{DNS.header = hd, DNS.question = qs} err = 
+onException :: MonadIO m => DNS.DNSMessage -> m DNS.DNSMessage
+onException DNS.DNSMessage{DNS.header = hd, DNS.question = qs} = 
     pure DNS.defaultResponse 
         { DNS.header    = (DNS.header DNS.defaultResponse) 
             { DNS.identifier = DNS.identifier hd
-            , DNS.flags = (DNS.flags $ DNS.header DNS.defaultResponse) { DNS.rcode = rcode }
+            , DNS.flags = (DNS.flags $ DNS.header DNS.defaultResponse) { DNS.rcode = DNS.ServFail }
             }
         , DNS.question  = qs
         }
-    where
-        rcode = case err of
-            UpstreamDnsError e          -> rcode' e
-            UpstreamUnsupportError _    -> DNS.FormatErr
-            _                           -> DNS.ServFail
-            
-        rcode' e = case e of
-            DNS.FormatError         -> DNS.FormatErr
-            DNS.ServerFailure       -> DNS.ServFail
-            _                       -> DNS.BadRCODE 
-
-preprocess :: AppProvision m => DNS.DNSMessage -> m DNS.DNSMessage
+   
+preprocess :: (MonadReader AppEnv m) => DNS.DNSMessage -> m DNS.DNSMessage
 preprocess r@DNS.DNSMessage{ DNS.question = qs } = do
     refuseAny <- view (appEnvConfig . configRefuseAny)
     if refuseAny
@@ -225,7 +218,7 @@ preprocess r@DNS.DNSMessage{ DNS.question = qs } = do
     
     where nonany DNS.Question { DNS.qtype = typ } = typ /= DNS.ANY
 
-process :: AppProvision m => DNS.DNSMessage -> m DNS.DNSMessage
+process :: (KatipContext m, MonadBaseControl IO m, MonadReader AppEnv m, MonadError AppError m) => DNS.DNSMessage -> m DNS.DNSMessage
 process = resolve
 
 postprocess :: Applicative m => DNS.DNSMessage -> m DNS.DNSMessage
