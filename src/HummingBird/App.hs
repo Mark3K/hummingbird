@@ -33,7 +33,7 @@ module HummingBird.App
 
 import Control.Concurrent.Lifted (fork)
 import Control.Concurrent.STM (newTChanIO, TChan, atomically, readTChan, writeTChan)
-import Control.Exception.Lifted (Exception, catch, SomeException)
+import Control.Exception.Lifted (Exception, catch, SomeException (SomeException))
 import Control.Lens (makeClassy, makeClassyPrisms, view, over, (^.), (#))
 import Control.Monad (forever)
 import Control.Monad.Base (MonadBase (liftBase), liftBaseDefault)
@@ -51,6 +51,7 @@ import Control.Monad.Trans.Control
 
 import Data.Bifunctor (bimap)
 import Data.IORef (IORef, atomicModifyIORef')
+import Data.Time (getCurrentTime, diffUTCTime)
 
 import Katip
     ( defaultScribeSettings
@@ -79,7 +80,6 @@ import HummingBird.Server
 import HummingBird.Types
 import HummingBird.Router
 import HummingBird.Parser.ServerConfig (routesFromFile)
-import Data.Time (getCurrentTime, diffUTCTime)
 
 data AppError 
     = AppServerError    ServerError
@@ -186,7 +186,7 @@ handleRequest :: AppProvision m => RequestContext -> m ()
 handleRequest RequestContext{..} = do
     $(logTM) InfoS ("handle request " <> showLS rid)
     begin <- liftIO getCurrentTime
-    resp <- catch (handle requestContextMessage) $ \(e :: SomeException) -> do 
+    resp <- handle requestContextMessage `catch` \(SomeException e) -> do 
         $(logTM) ErrorS ("unexpected error: " <> showLS e)
         onException requestContextMessage
     rc   <- case requestContextAddr of

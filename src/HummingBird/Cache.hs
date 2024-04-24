@@ -94,26 +94,23 @@ mkCache size maxTTL minTTL = do
     pure $ Cache state tid size (fromIntegral maxTTL) (fromIntegral minTTL)
 
 insertCache :: (KatipContext m, MonadBaseControl IO m) => DNSMessage -> Cache -> m ()
-insertCache msg@DNSMessage{..} c = if null (answer <> authority <> additional)
-        then pure () 
-        else insertCache' msg c
-
-insertCache' :: (KatipContext m, MonadBaseControl IO m) => DNSMessage -> Cache -> m ()
-insertCache' msg c@Cache{..} = do
+insertCache msg c@Cache{..} = do
     $(logTM) InfoS ("cache insert: " <> showLS msg)
-    $(logTM) InfoS ("cache item: " <> showLS val)
+    $(logTM) InfoS ("cache item: " <> showLS item)
     now <- liftIO getCurrentTime
     let expire = addUTCTimeSeconds (fromIntegral ttl) now
     mask_ $ liftIO $ do join $ atomicModifyIORef' _cacheState (cons expire)
     where
-        key = buildKey msg
-        val = buildItem msg
-        ttl = max (min (itemTTL val) _cacheMaxTTL) _cacheMinTTL
+        key     = buildKey msg
+        item    = buildItem msg
+        ttl     = max (min itemTTL _cacheMaxTTL) _cacheMinTTL
+        itemTTL = if null ttls then _cacheMinTTL else minimum ttls
+        ttls    = map rrttl (_itemAnswer item <> _itemAuthority item <> _itemAdditional item)
         
-        cons expire Nothing  =  let q = PSQ.insert key expire val PSQ.empty
+        cons expire Nothing  =  let q = PSQ.insert key expire item PSQ.empty
                                 in (Just q, spawn)
         cons expire (Just s) =  let a = if PSQ.size s > _cacheMaxSize then PSQ.deleteMin s else s
-                                    b = PSQ.insert key expire val a
+                                    b = PSQ.insert key expire item a
                                 in (Just b, respawn expire)
         spawn = do
             tid <- fork $ refreshCache c
@@ -165,5 +162,3 @@ lookupCache k Cache{..} = do
         withTTL now (e, v) = if ttl <= 0 then Nothing else Just (fromIntegral ttl, v)
             where ttl = diffUTCTimeInSeconds e now
         
-itemTTL :: Item -> TTL
-itemTTL Item {..} = minimum $ map rrttl (_itemAnswer <> _itemAuthority <> _itemAdditional)

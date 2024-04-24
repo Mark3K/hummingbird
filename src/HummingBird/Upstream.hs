@@ -144,15 +144,15 @@ resolveFromUpstream q = do
             
 qName :: UpstreamProvision c e m => DNSMessage -> m Domain 
 qName DNSMessage {question = qs} = case qs of
-    []      -> throwError $ _UpstreamInvalidQuery # "query is empty"
+    []      -> throwError $ _UpstreamInvalidQuery # "question is empty"
     [q]     -> pure $ qname q
-    (_:_)   -> throwError $ _UpstreamInvalidQuery # "query is more than 1"
+    (_:_)   -> throwError $ _UpstreamInvalidQuery # "question is more than 1"
 
 qType :: UpstreamProvision c e m => DNSMessage -> m TYPE
 qType DNSMessage {question = qs} = case qs of
-    []      -> throwError $ _UpstreamInvalidQuery # "query is empty"
+    []      -> throwError $ _UpstreamInvalidQuery # "question is empty"
     [q]     -> pure $ qtype q
-    (_:_)   -> throwError $ _UpstreamInvalidQuery # "query is more than 1"
+    (_:_)   -> throwError $ _UpstreamInvalidQuery # "question is more than 1"
 
 seqResolve :: UpstreamProvision c e m => [(Upstream, Resolver)] -> DNSMessage -> m DNSMessage
 seqResolve ((upstream, r):rs) q = do
