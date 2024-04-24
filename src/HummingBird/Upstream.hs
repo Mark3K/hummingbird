@@ -72,20 +72,22 @@ resolve query = do
     cache <- view upstreamCache
     case cache of
         Nothing -> resolveFromUpstream query
-        Just  c -> do
-            v <- lookupCache key c
-            case v of
-                Nothing             -> do
-                    response <- resolveFromUpstream query
-                    case (rcode . flags . header) response of
-                        NoErr -> do
-                            _ <- insertCache response c
-                            pure response
-                        _     -> pure response
+        Just  c -> resolveWithCache query c
 
-                Just (ttl, item)    -> do
-                    $(logTM) InfoS ("[TTL="<> showLS ttl <> "] Cache hit on query <" <> showLS query <> ">: " <> showLS item)
-                    pure $ withRRs item $ toResponse query
+resolveWithCache :: UpstreamProvision c e m => DNSMessage -> Cache -> m DNSMessage
+resolveWithCache query cache = do
+    v <- lookupCache key cache
+    case v of
+        Nothing             -> do
+            response <- resolveFromUpstream query
+            case (rcode . flags . header) response of
+                NoErr -> do
+                    _ <- insertCache response cache
+                    pure response
+                _     -> pure response
+
+        Just (_ttl, item)   -> do
+            pure $ withRRs item $ toResponse query
     where
         key = buildKey query
 
