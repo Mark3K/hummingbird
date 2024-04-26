@@ -9,8 +9,8 @@
 module HummingBird.Server.TCP where
 
 import Control.Concurrent.Lifted (forkFinally, fork)
-import Control.Concurrent.STM
-import Control.Exception.Lifted (catch, SomeException)
+import Control.Exception.Lifted (SomeException(..), catch)
+import Control.Concurrent.STM ( TChan, atomically, writeTChan, newEmptyTMVarIO, takeTMVar)
 import Control.Lens (makeClassyPrisms, makeClassy, view, (^.), (#))
 import Control.Monad (forever, when)
 import Control.Monad.Except (MonadError(throwError))
@@ -18,13 +18,14 @@ import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.Reader (MonadReader)
 import Control.Monad.Trans.Control (MonadBaseControl)
 
-import Data.Map (Map)
-import qualified Data.Map as Map
+import Data.Bifunctor (bimap)
 
 import Katip (KatipContext, Severity(..), logTM, showLS)
 
 import qualified Network.DNS as DNS
 import Network.Socket 
+
+import System.Timeout.Lifted (timeout)
 
 import HummingBird.Event
 import HummingBird.Types
@@ -44,7 +45,6 @@ data Response
 data TcpServerEnv = TcpServerEnv
     { _tcpServerEnvHost     :: HostName
     , _tcpServerEnvPort     :: ServiceName
-    , _tcpServerEnvRequests :: TVar (Map DNS.Identifier (TMVar Response))
     } deriving (Eq)
 makeClassy ''TcpServerEnv
 
@@ -58,77 +58,53 @@ type TcpServerProvision c e m =
 
 buildTcpServerEnv :: (MonadIO m) => Config -> m (Either TcpServerError TcpServerEnv)
 buildTcpServerEnv config = do
-    requests <- liftIO $ newTVarIO mempty
     pure $ Right $ TcpServerEnv
         { _tcpServerEnvHost     = show $ config ^. configListenAddr
         , _tcpServerEnvPort     = show $ config ^. configListenPort
-        , _tcpServerEnvRequests = requests
         }
 
 serve :: TcpServerProvision c e m => TChan Event -> m ()
 serve ch = do
     host <- view tcpServerEnvHost
     port <- view tcpServerEnvPort
-
     rv   <- openSock Stream host port
-    case rv of
-        Left             s -> throwError $ _TcpSocketError # s
-        Right (sock, addr) -> do
-            _ <- liftIO $ listen sock 5
-            $(logTM) DebugS ("TCP serve at " <> showLS addr)
+    case bimap (_TcpSocketError #) (serveOnSock ch) rv of
+        Left  e -> throwError e
+        Right v -> v
+            
+serveOnSock :: TcpServerProvision c e m => TChan Event -> (Socket, SockAddr) -> m ()
+serveOnSock ch (sock, addr) = do
+    _ <- liftIO $ setSocketOption sock ReuseAddr 1
+    _ <- liftIO $ listen sock 5
+    $(logTM) DebugS ("TCP serve at " <> showLS addr)
+    forever $ do
+        (clientSock, clientAddr) <- liftIO $ accept sock
+        tid <- forkFinally (serveClient clientSock ch) (\rv -> do
+            closeSock clientSock
+            case rv of
+                Left  e -> $(logTM) ErrorS ("error handle client " <> showLS clientAddr <> ": " <> showLS e)
+                Right _ -> pure ()
+            )
+        $(logTM) DebugS ("new tcp client " <> showLS clientAddr <> " handled by thread " <> showLS tid)
 
-            respCh <- liftIO newTChanIO
-            _ <- fork (forever $ sender respCh)
-            forever $ do
-                (csock, caddr) <- liftIO $ accept sock
-                $(logTM) DebugS ("A new TCP client " <> showLS caddr)
-                forkFinally 
-                    (catch (process csock ch respCh)
-                        (\(se :: SomeException) -> do
-                                $(logTM) ErrorS ("error processing tcp request: " <> showLS se)
-                                throwError $ _TcpSocketError # show se)
-                    )
-                    (\_ -> closeSock csock)
+-- TODO: 
+-- 1) support timeout
+-- 2) support query pipelining
+serveClient :: TcpServerProvision c e m  => Socket -> TChan Event -> m ()
+serveClient sock ch = do
+    message <- liftIO $ DNS.receiveVC sock
+    when (DNS.qOrR (DNS.flags $ DNS.header message) == DNS.QR_Query) $ do
+        tid <- fork $ handleQuery sock ch message `catch` (\(SomeException e) -> do
+            $(logTM) ErrorS ("error handle query " <> showLS (rid message) <> ": " <> showLS e) 
+            )
+        $(logTM) InfoS ("start thread " <> showLS tid <> " to handle query " <> showLS (rid message))
+    where rid = DNS.identifier . DNS.header
 
-    where
-        process sock ch0 ch1 = do
-            msg <- liftIO $ DNS.receiveVC sock
-            if DNS.qOrR (DNS.flags $ DNS.header msg) == DNS.QR_Query
-            then do
-                $(logTM) DebugS ("TCP DNS message: " <> showLS msg)
-
-                reqsref  <- view tcpServerEnvRequests
-                let _id = (DNS.identifier . DNS.header) msg
-
-                respVar <- liftIO $ atomically $ do
-                    newRespVar  <- newEmptyTMVar
-                    requests    <- readTVar reqsref
-                    when (Map.member _id requests) $ case Map.lookup _id requests of
-                        Nothing -> pure ()
-                        Just rs -> putTMVar rs Dead
-                    writeTVar reqsref . Map.insert _id newRespVar $ requests
-                    pure newRespVar
-                
-                liftIO $ atomically $ writeTChan ch0 (RequestEvent $ RequestContext msg Nothing ch1)
-                response <- liftIO $ atomically $ takeTMVar respVar
-                case response of
-                    OK m -> liftIO $ DNS.sendVC sock $ DNS.encode m
-                    Dead -> pure ()
-                liftIO $ atomically $ modifyTVar reqsref $ \reqs -> Map.delete _id reqs
-            else do
-                $(logTM) ErrorS ("NOT a query: " <> showLS msg) 
-
-        sender tc = do
-            resp <- liftIO $ atomically $ readTChan tc
-            case resp of
-                ResponseUdp               _ -> $(logTM) WarningS "TCP server received UDP response"
-                ResponseTcp TcpResponse{..} -> do
-                    $(logTM) DebugS ("TCP server response: " <> showLS trMessage)
-                    reqsref  <- view tcpServerEnvRequests
-                    let _id = (DNS.identifier . DNS.header) trMessage
-                    liftIO $ atomically $ do
-                        requests <- readTVar reqsref
-                        when (Map.member _id requests) $ case Map.lookup _id requests of
-                            Nothing -> pure ()
-                            Just rs -> putTMVar rs $ OK trMessage
- 
+handleQuery :: TcpServerProvision c e m  => Socket -> TChan Event -> DNS.DNSMessage -> m ()
+handleQuery sock ch message = do
+    $(logTM) DebugS ("TCP DNS message: " <> showLS message)
+    responseVar  <- liftIO newEmptyTMVarIO
+    liftIO $ atomically $ writeTChan ch (RequestEvent $ RequestTcp $ TcpRequest message responseVar)
+    TcpResponse{..} <- liftIO $ atomically $ takeTMVar responseVar
+    $(logTM) DebugS ("TCP server response: " <> showLS tcpResponseMessage)
+    liftIO $ DNS.sendVC sock $ DNS.encode tcpResponseMessage

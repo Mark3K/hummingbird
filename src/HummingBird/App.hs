@@ -31,8 +31,8 @@ module HummingBird.App
     , AppError(..)
     ) where
 
-import Control.Concurrent.Lifted (fork)
-import Control.Concurrent.STM (newTChanIO, TChan, atomically, readTChan, writeTChan)
+import Control.Concurrent.Lifted (fork, forkFinally)
+import Control.Concurrent.STM (newTChanIO, TChan, atomically, readTChan, writeTChan, putTMVar)
 import Control.Exception.Lifted (Exception, catch, SomeException (SomeException))
 import Control.Lens (makeClassy, makeClassyPrisms, view, over, (^.), (#))
 import Control.Monad (forever)
@@ -176,28 +176,31 @@ eventLoop ch = do
     event <- liftIO $ atomically $ readTChan ch
     case event of
          RequestEvent ctx -> do
-            tid <- fork (handleRequest ctx)
+            tid <- forkFinally (handleRequest ctx) (\case
+                Left  e -> $(logTM) ErrorS ("error handle request: " <> showLS (rid ctx) <> ": " <> showLS e)
+                Right _ -> pure ()
+                )
             $(logTM) InfoS ("start thread " <> showLS tid <> " to handle request")
          -- TODO
          TimeoutEvent systime timeout -> undefined
          ListenerExit reason -> undefined
+    where
+        rid (RequestTcp TcpRequest{..}) = (DNS.identifier . DNS.header) tcpRequestMessage
+        rid (RequestUdp UdpRequest{..}) = (DNS.identifier . DNS.header) udpRequestMessage
 
 handleRequest :: AppProvision m => RequestContext -> m ()
-handleRequest RequestContext{..} = do
-    $(logTM) InfoS ("handle request " <> showLS rid)
-    begin <- liftIO getCurrentTime
-    resp <- handle requestContextMessage `catch` \(SomeException e) -> do 
-        $(logTM) ErrorS ("unexpected error: " <> showLS e)
-        onException requestContextMessage
-    rc   <- case requestContextAddr of
-        Nothing     -> pure $ ResponseTcp $ TcpResponse resp
-        Just addr   -> pure $ ResponseUdp $ UdpResponse resp addr
-    liftIO $ atomically $ writeTChan requestContextChannel rc
-    end <- liftIO getCurrentTime
-    $(logTM) InfoS ("request " <> showLS rid <> " costs " <> showLS (diffUTCTime end begin))
-    where
-        rid = (DNS.identifier . DNS.header) requestContextMessage
-        handle r = preprocess r >>= process >>= postprocess
+handleRequest (RequestTcp TcpRequest{..}) = do
+    $(logTM) InfoS ("tcp request: " <> showLS tcpRequestMessage)
+    response <- chainproc tcpRequestMessage `catch` \(SomeException e) -> do
+        $(logTM) ErrorS ("tcp handler unexpected error: " <> showLS e)
+        onException tcpRequestMessage
+    liftIO $ atomically $ putTMVar tcpRequestResponseVar $ TcpResponse response
+handleRequest (RequestUdp UdpRequest{..}) = do
+    $(logTM) InfoS ("udp request " <> showLS udpRequestMessage)
+    response <- chainproc udpRequestMessage `catch` \(SomeException e) -> do 
+        $(logTM) ErrorS ("udp handler unexpected error: " <> showLS e)
+        onException udpRequestMessage
+    liftIO $ atomically $ writeTChan udpRequestResponseCh $ UdpResponse response udpRequestAddr
 
 onException :: MonadIO m => DNS.DNSMessage -> m DNS.DNSMessage
 onException DNS.DNSMessage{DNS.header = hd, DNS.question = qs} = 
@@ -209,6 +212,9 @@ onException DNS.DNSMessage{DNS.header = hd, DNS.question = qs} =
         , DNS.question  = qs
         }
    
+chainproc :: (AppProvision m) => DNS.DNSMessage -> m DNS.DNSMessage
+chainproc m = preprocess m >>= process >>= postprocess
+   
 preprocess :: (MonadReader AppEnv m) => DNS.DNSMessage -> m DNS.DNSMessage
 preprocess r@DNS.DNSMessage{ DNS.question = qs } = do
     refuseAny <- view (appEnvConfig . configRefuseAny)
@@ -218,7 +224,13 @@ preprocess r@DNS.DNSMessage{ DNS.question = qs } = do
     
     where nonany DNS.Question { DNS.qtype = typ } = typ /= DNS.ANY
 
-process :: (KatipContext m, MonadBaseControl IO m, MonadReader AppEnv m, MonadError AppError m) => DNS.DNSMessage -> m DNS.DNSMessage
+process :: 
+    ( KatipContext m
+    , MonadBaseControl IO m
+    , MonadReader AppEnv m
+    , MonadError AppError m
+    ) 
+    => DNS.DNSMessage -> m DNS.DNSMessage
 process = resolve
 
 postprocess :: Applicative m => DNS.DNSMessage -> m DNS.DNSMessage

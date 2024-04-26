@@ -57,7 +57,7 @@ data Item  = Item
     { _itemHeaderAD     :: Bool -- Authenticated Data bit
     , _itemHeaderRD     :: Bool -- Recursion Desired bit
     , _itemRcode        :: RCODE
-    , _itemAnswer      :: Answers
+    , _itemAnswer       :: Answers
     , _itemAuthority    :: AuthorityRecords
     , _itemAdditional   :: AdditionalRecords
     } deriving(Show, Eq)

@@ -77,17 +77,17 @@ resolve query = do
 resolveWithCache :: UpstreamProvision c e m => DNSMessage -> Cache -> m DNSMessage
 resolveWithCache query cache = do
     v <- lookupCache key cache
-    case v of
+    i <- case v of
         Nothing             -> do
             response <- resolveFromUpstream query
             case (rcode . flags . header) response of
                 NoErr -> do
                     _ <- insertCache response cache
-                    pure response
-                _     -> pure response
+                    pure $ buildItem response
+                _     -> pure $ buildItem response
 
-        Just (_ttl, item)   -> do
-            pure $ withRRs item $ toResponse query
+        Just (_ttl, item)   -> pure item
+    pure $ withRRs i $ toResponse query
     where
         key = buildKey query
 

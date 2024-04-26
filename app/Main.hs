@@ -6,7 +6,7 @@
 
 module Main (main) where
 
-import Control.Lens ((.~), (^.), set)
+import Control.Lens ((.~), set)
 import Katip
 import Options.Applicative
 

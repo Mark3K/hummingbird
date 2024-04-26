@@ -82,15 +82,12 @@ serve ch = do
                     $(logTM) ErrorS ("dns error: " <> showLS err)
                 Right msg -> do
                     $(logTM) DebugS ("UDP DNS message: " <> showLS msg)
-                    liftIO $ atomically $ writeTChan ch (RequestEvent $ RequestContext msg (Just addr) sch)
+                    liftIO $ atomically $ writeTChan ch (RequestEvent $ RequestUdp $ UdpRequest msg addr sch)
             
         sender sock sch = do
-            resp <- liftIO $ atomically $ readTChan sch
-            case resp of
-                ResponseTcp               _ -> $(logTM) WarningS "UDP server received TCP response"
-                ResponseUdp UdpResponse{..} -> do
-                    $(logTM) DebugS ("UDP server response: " <> showLS urMessage)
-                    liftIO $ sendAllTo sock (DNS.encode urMessage) urAddr
+            UdpResponse {..} <- liftIO $ atomically $ readTChan sch
+            $(logTM) DebugS ("UDP server response: " <> showLS udpResponseMessage)
+            liftIO $ sendAllTo sock (DNS.encode udpResponseMessage) udpResponseAddr
 
         parse raw = do
             m <- DNS.decode raw

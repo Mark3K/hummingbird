@@ -1,42 +1,57 @@
 {-# LANGUAGE RecordWildCards #-}
 
-module HummingBird.Types 
+module HummingBird.Types
     ( RequestContext (..) 
-    , ResponseContext (..)
+    , TcpRequest (..)
     , TcpResponse (..)
+    , UdpRequest (..)
     , UdpResponse (..)
     , Upstream (..)
     , Route (..)
     ) where
 
-import Control.Concurrent.STM (TChan)
+import Control.Concurrent.STM (TMVar, TChan)
 
 import Data.IP (IP)
 
 import Network.DNS (Domain, DNSMessage)
 import Network.Socket (SockAddr, PortNumber)
 
-data RequestContext = RequestContext
-    { requestContextMessage     :: DNSMessage 
-    , requestContextAddr        :: Maybe SockAddr
-    , requestContextChannel     :: TChan ResponseContext
-    }
-
-instance Show RequestContext where
-    show RequestContext {..} = show requestContextMessage
-
-data ResponseContext
-    = ResponseTcp TcpResponse
-    | ResponseUdp UdpResponse
+data RequestContext 
+    = RequestTcp TcpRequest
+    | RequestUdp UdpRequest
     deriving (Show)
 
+data TcpRequest = TcpRequest
+    { tcpRequestMessage     :: DNSMessage 
+    , tcpRequestResponseVar :: TMVar TcpResponse
+    }
+
+instance Show TcpRequest where
+    show TcpRequest{..} = "TcpRequest { message = " 
+        <> show tcpRequestMessage
+        <> "}"
+
+data UdpRequest = UdpRequest
+    { udpRequestMessage     :: DNSMessage
+    , udpRequestAddr        :: SockAddr
+    , udpRequestResponseCh  :: TChan UdpResponse
+    }
+
+instance Show UdpRequest where
+    show UdpRequest{..} = "UdpRequest { message = " 
+        <> show udpRequestMessage 
+        <> ", addr = " 
+        <> show udpRequestAddr
+        <> "}"
+
 newtype TcpResponse = TcpResponse
-    { trMessage     :: DNSMessage
+    { tcpResponseMessage     :: DNSMessage
     } deriving (Show)
 
 data UdpResponse = UdpResponse
-    { urMessage     :: DNSMessage
-    , urAddr        :: SockAddr
+    { udpResponseMessage     :: DNSMessage
+    , udpResponseAddr        :: SockAddr
     } deriving (Show)
 
 data Upstream   = Upstream IP (Maybe PortNumber) deriving (Show, Eq, Ord)
