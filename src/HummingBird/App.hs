@@ -125,7 +125,7 @@ buildAppEnv :: (MonadIO m) => Config -> m (Either AppError AppEnv)
 buildAppEnv config = do
     logEnv   <- buildLogger         (config ^. configLog)
     upstream <- buildUpstreamEnv    (config ^. configUpstream)
-    server   <- buildServerEnv      config
+    server   <- buildServerEnv      (config ^. configServer)
 
     pure $ bimap (_AppUpstreamError #) (build logEnv) upstream 
          >>= (\b -> bimap (_AppServerError #) b server)

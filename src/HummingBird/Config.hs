@@ -4,34 +4,42 @@
 {-# LANGUAGE TupleSections      #-}
 
 module HummingBird.Config 
-    ( defaultConfig
-    , Config (..)
+    ( Upstream (..)
+
     , LogConfig (..)
-    , UpstreamConfig (..)
-    , Upstream (..)
     -- LogConfig accessors
     , logConfigFile
     , logConfigLevel
     , logConfigVerbosity
+
+    , UpstreamConfig (..)
     -- UpstreamConfig accessors
     , upstreamConfigDefaults
     , upstreamConfigFiles
     , upstreamConfigConcurrent
     , upstreamConfigCache
+
     -- CacheConfig accessors
     , cacheConfigEnable
     , cacheConfigMaxTTL
     , cacheConfigMinTTL
     , cacheConfigMaxSize
+
+    , ServerConfig (..)
+    -- ServerConfig accessors
+    , serverConfigListenAddr
+    , serverConfigListenPort
+    , serverConfigTcpTimeout
+
+    , Config (..)
     -- Config accessors
     , configLog
-    , configListenAddr
-    , configListenPort
-    , configEnableTCP
+    , configServer
     , configRefuseAny
     , configUpstream
     -- utils function
     , fromFile
+    , defaultConfig
     ) where
 
 import Control.Lens (makeLenses, (^.))
@@ -151,11 +159,33 @@ instance FromJSON UpstreamConfig where
             parse lens key = fromMaybe (defaultUpstreamConfig ^. lens) <$> (v .:? key)
     parseJSON _ = mempty
 
+data ServerConfig = ServerConfig
+    { _serverConfigListenAddr   :: IP
+    , _serverConfigListenPort   :: PortNumber
+    , _serverConfigTcpTimeout   :: Int
+    } deriving (Show, Eq)
+makeLenses ''ServerConfig
+
+defaultServerConfig :: ServerConfig
+defaultServerConfig = ServerConfig
+    { _serverConfigListenAddr = "127.0.0.1"
+    , _serverConfigListenPort = 53
+    , _serverConfigTcpTimeout = 3
+    }
+
+instance FromJSON ServerConfig where
+    parseJSON (Y.Object v) = do
+        addr        <- parse serverConfigListenAddr "listen_addr"
+        port        <- parse serverConfigListenPort "listen_port"
+        timeout     <- parse serverConfigTcpTimeout "tcp_timeout"
+        pure $ ServerConfig addr port timeout
+        where
+            parse lens key = fromMaybe (defaultServerConfig ^. lens) <$> (v .:? key)
+    parseJSON _ = mempty
+
 data Config = Config 
     { _configLog            :: LogConfig
-    , _configListenAddr     :: IP
-    , _configListenPort     :: PortNumber
-    , _configEnableTCP      :: Bool
+    , _configServer         :: ServerConfig
     , _configRefuseAny      :: Bool
     , _configUpstream       :: UpstreamConfig
     } deriving (Show, Eq)
@@ -164,9 +194,7 @@ makeLenses ''Config
 defaultConfig :: Config
 defaultConfig = Config 
     { _configLog            = defaultLogConfig
-    , _configListenAddr     = "127.0.0.1"
-    , _configListenPort     = 53
-    , _configEnableTCP      = True
+    , _configServer         = defaultServerConfig
     , _configRefuseAny      = False
     , _configUpstream       = defaultUpstreamConfig
     }
@@ -174,19 +202,11 @@ defaultConfig = Config
 instance FromJSON Config where
     parseJSON (Y.Object v) = do
         logs        <- fromMaybe (defaultConfig ^. configLog)        <$> v .:? "log"
-        addr        <- fromMaybe (defaultConfig ^. configListenAddr) <$> v .:? "listen_addr"
-        port        <- fromMaybe (defaultConfig ^. configListenPort) <$> v .:? "listen_port"
-        enableTCP   <- fromMaybe (defaultConfig ^. configEnableTCP)  <$> v .:? "enable_tcp"
+        server      <- fromMaybe (defaultConfig ^. configServer)     <$> v .:? "server"
         refuseAny   <- fromMaybe (defaultConfig ^. configRefuseAny)  <$> v .:? "refuse_any"
         upstream    <- fromMaybe (defaultConfig ^. configUpstream)   <$> v .:? "upstream"
-        pure $ Config 
-            logs
-            addr
-            port
-            enableTCP
-            refuseAny
-            upstream
-    parseJSON _            = fail "Expected Object for Config value"
+        pure $ Config logs server refuseAny upstream
+    parseJSON _            = mempty
 
 fromFile :: FilePath -> IO (Either String Config)
 fromFile path = first show <$> Y.decodeFileEither path

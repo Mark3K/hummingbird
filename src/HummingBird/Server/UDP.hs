@@ -50,10 +50,10 @@ type UdpServerProvision c e m =
     , MonadError e m, AsUdpServerError e
     )
 
-buildUdpServerEnv :: (Applicative m) => Config -> m (Either UdpServerError UdpServerEnv)
+buildUdpServerEnv :: (Applicative m) => ServerConfig -> m (Either UdpServerError UdpServerEnv)
 buildUdpServerEnv config = pure $ Right $ UdpServerEnv
-    { _udpServerEnvHost = show $ config ^. configListenAddr
-    , _udpServerEnvPort = show $ config ^. configListenPort
+    { _udpServerEnvHost = show $ config ^. serverConfigListenAddr
+    , _udpServerEnvPort = show $ config ^. serverConfigListenPort
     }
 
 serve :: UdpServerProvision c e m => TChan Event -> m ()
@@ -87,6 +87,7 @@ serve ch = do
         sender sock sch = do
             UdpResponse {..} <- liftIO $ atomically $ readTChan sch
             $(logTM) DebugS ("UDP server response: " <> showLS udpResponseMessage)
+            -- TODO: check message length and set TC bit
             liftIO $ sendAllTo sock (DNS.encode udpResponseMessage) udpResponseAddr
 
         parse raw = do

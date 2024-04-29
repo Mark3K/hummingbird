@@ -56,6 +56,7 @@ library
     , iproute
     , katip
     , lens
+    , lifted-async
     , lifted-base
     , monad-control
     , mtl
@@ -94,6 +95,7 @@ executable hummingbird
     , iproute
     , katip
     , lens
+    , lifted-async
     , lifted-base
     , monad-control
     , mtl
@@ -132,6 +134,7 @@ test-suite hummingbird-test
     , iproute
     , katip
     , lens
+    , lifted-async
     , lifted-base
     , monad-control
     , mtl

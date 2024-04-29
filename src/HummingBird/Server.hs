@@ -14,9 +14,8 @@ module HummingBird.Server where
 
 import Control.Concurrent.Lifted (fork)
 import Control.Concurrent.STM (TChan)
-import Control.Exception.Lifted (catch, SomeException)
-import Control.Lens (makeClassy, makeClassyPrisms, view, (^.), (#))
-import Control.Monad (when, void)
+import Control.Exception.Lifted (catch, SomeException(..))
+import Control.Lens (makeClassy, makeClassyPrisms, (#))
 import Control.Monad.IO.Class (MonadIO)
 
 import Data.Bifunctor (bimap)
@@ -43,7 +42,6 @@ instance (AsServerError e) => TCP.AsTcpServerError e where
 data ServerEnv = ServerEnv 
     { _serverEnvUdp         :: UDP.UdpServerEnv
     , _serverEnvTcp         :: TCP.TcpServerEnv
-    , _serverEnvEnableTcp   :: Bool
     }
 makeClassy ''ServerEnv
 
@@ -60,7 +58,7 @@ type ServerProvision c e m =
     , TCP.TcpServerProvision c e m
     )
 
-buildServerEnv :: (MonadIO m) => Config -> m (Either ServerError ServerEnv)
+buildServerEnv :: (MonadIO m) => ServerConfig -> m (Either ServerError ServerEnv)
 buildServerEnv config = do
     udp <- UDP.buildUdpServerEnv config
     tcp <- TCP.buildTcpServerEnv config
@@ -70,14 +68,13 @@ buildServerEnv config = do
         build u t = ServerEnv
             { _serverEnvUdp         = u
             , _serverEnvTcp         = t
-            , _serverEnvEnableTcp   = config ^. configEnableTCP
             }
 
 serve :: ServerProvision c e m => TChan Event -> m ()
 serve ch = do
     $(logTM) DebugS "begin to start servers ..."
-    _   <- fork $ catch (UDP.serve ch) (\(e :: SomeException) -> do
+    _   <- fork $ UDP.serve ch `catch` (\(SomeException e) -> do
         $(logTM) ErrorS ("UDP server error: " <> showLS e))
-    tcp <- view serverEnvEnableTcp
-    when tcp $ void $ fork $ catch (TCP.serve ch) (\(e :: SomeException) -> do
+    _   <- fork $ TCP.serve ch `catch` (\(SomeException e) -> do
         $(logTM) ErrorS ("TCP server error: " <> showLS e))
+    pure ()

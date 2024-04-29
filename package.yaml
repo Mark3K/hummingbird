@@ -25,6 +25,7 @@ dependencies:
 - containers
 - dns
 - lifted-base
+- lifted-async
 - monad-control
 - mtl
 - network

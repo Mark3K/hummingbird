@@ -20,7 +20,6 @@ data Params = Params
     , listenPort    :: Maybe PortNumber
     , upstreams     :: [(IP, Maybe PortNumber)]
     , refuseAny     :: Bool
-    , enableTcp     :: Bool
     , noResolv      :: Bool
     , verbose       :: Int
     , version       :: Bool
@@ -35,7 +34,6 @@ params = Params
     <*> optional listenPortParser
     <*> upstreamsParser
     <*> refuseAnyParser
-    <*> enableTcpParser
     <*> noResolvParser
     <*> (length <$> many (flag' () (short 'v' <> help "Verbose output (-v|-vv|-vvv)")))
     <*> switch (long "version" <> help "Show the program verion")
@@ -114,9 +112,6 @@ upstreamOption = option $ eitherReader $ \s -> case split ':' s of
 
 refuseAnyParser :: Parser Bool
 refuseAnyParser = switch (long "refuse-any" <> help "If specified, refuse ANY requests")
-
-enableTcpParser :: Parser Bool
-enableTcpParser = switch (long "enable-tcp" <> help "If specified, enable TCP server")
 
 noResolvParser  :: Parser Bool
 noResolvParser  = switch (long "no-resolv"  <> help "")

@@ -5,12 +5,14 @@
 {-# LANGUAGE RecordWildCards        #-}
 {-# LANGUAGE ScopedTypeVariables    #-}
 {-# LANGUAGE TemplateHaskell        #-}
+{-# LANGUAGE TupleSections          #-}
 
 module HummingBird.Server.TCP where
 
-import Control.Concurrent.Lifted (forkFinally, fork)
-import Control.Exception.Lifted (SomeException(..), catch)
-import Control.Concurrent.STM ( TChan, atomically, writeTChan, newEmptyTMVarIO, takeTMVar)
+import Control.Concurrent.Async.Lifted (async, waitEitherCatch)
+import Control.Concurrent.Lifted (forkFinally)
+import Control.Concurrent.STM ( TChan, atomically, writeTChan, newEmptyTMVarIO, takeTMVar, TMVar, STM, orElse)
+import Control.Exception.Lifted (SomeException(..), try)
 import Control.Lens (makeClassyPrisms, makeClassy, view, (^.), (#))
 import Control.Monad (forever, when)
 import Control.Monad.Except (MonadError(throwError))
@@ -19,6 +21,10 @@ import Control.Monad.Reader (MonadReader)
 import Control.Monad.Trans.Control (MonadBaseControl)
 
 import Data.Bifunctor (bimap)
+import Data.Foldable (for_)
+import Data.List.NonEmpty (NonEmpty, fromList)
+import Data.Map (Map)
+import qualified Data.Map as Map
 
 import Katip (KatipContext, Severity(..), logTM, showLS)
 
@@ -45,6 +51,7 @@ data Response
 data TcpServerEnv = TcpServerEnv
     { _tcpServerEnvHost     :: HostName
     , _tcpServerEnvPort     :: ServiceName
+    , _tcpServerEnvTimeout  :: Int
     } deriving (Eq)
 makeClassy ''TcpServerEnv
 
@@ -56,11 +63,12 @@ type TcpServerProvision c e m =
     , MonadError e m, AsTcpServerError e
     )
 
-buildTcpServerEnv :: (MonadIO m) => Config -> m (Either TcpServerError TcpServerEnv)
+buildTcpServerEnv :: (MonadIO m) => ServerConfig -> m (Either TcpServerError TcpServerEnv)
 buildTcpServerEnv config = do
     pure $ Right $ TcpServerEnv
-        { _tcpServerEnvHost     = show $ config ^. configListenAddr
-        , _tcpServerEnvPort     = show $ config ^. configListenPort
+        { _tcpServerEnvHost     = show $ config ^. serverConfigListenAddr
+        , _tcpServerEnvPort     = show $ config ^. serverConfigListenPort
+        , _tcpServerEnvTimeout  =        config ^. serverConfigTcpTimeout
         }
 
 serve :: TcpServerProvision c e m => TChan Event -> m ()
@@ -79,7 +87,7 @@ serveOnSock ch (sock, addr) = do
     $(logTM) DebugS ("TCP serve at " <> showLS addr)
     forever $ do
         (clientSock, clientAddr) <- liftIO $ accept sock
-        tid <- forkFinally (serveClient clientSock ch) (\rv -> do
+        tid <- forkFinally (serveClient clientSock ch mempty) (\rv -> do
             closeSock clientSock
             case rv of
                 Left  e -> $(logTM) ErrorS ("error handle client " <> showLS clientAddr <> ": " <> showLS e)
@@ -87,24 +95,46 @@ serveOnSock ch (sock, addr) = do
             )
         $(logTM) DebugS ("new tcp client " <> showLS clientAddr <> " handled by thread " <> showLS tid)
 
--- TODO: 
--- 1) support timeout
--- 2) support query pipelining
-serveClient :: TcpServerProvision c e m  => Socket -> TChan Event -> m ()
-serveClient sock ch = do
-    message <- liftIO $ DNS.receiveVC sock
-    when (DNS.qOrR (DNS.flags $ DNS.header message) == DNS.QR_Query) $ do
-        tid <- fork $ handleQuery sock ch message `catch` (\(SomeException e) -> do
-            $(logTM) ErrorS ("error handle query " <> showLS (rid message) <> ": " <> showLS e) 
-            )
-        $(logTM) InfoS ("start thread " <> showLS tid <> " to handle query " <> showLS (rid message))
-    where rid = DNS.identifier . DNS.header
+serveClient :: TcpServerProvision c e m  => Socket -> TChan Event -> Map DNS.Identifier (TMVar TcpResponse) -> m ()
+serveClient sock ch responses
+    | Map.null responses    = do
+        message <- try receive
+        case message of
+            Left (SomeException e) -> do
+                $(logTM) WarningS ("unexpected socket exception: " <> showLS e)
+            Right msg -> for_ msg onMessage
 
-handleQuery :: TcpServerProvision c e m  => Socket -> TChan Event -> DNS.DNSMessage -> m ()
-handleQuery sock ch message = do
-    $(logTM) DebugS ("TCP DNS message: " <> showLS message)
-    responseVar  <- liftIO newEmptyTMVarIO
-    liftIO $ atomically $ writeTChan ch (RequestEvent $ RequestTcp $ TcpRequest message responseVar)
-    TcpResponse{..} <- liftIO $ atomically $ takeTMVar responseVar
-    $(logTM) DebugS ("TCP server response: " <> showLS tcpResponseMessage)
-    liftIO $ DNS.sendVC sock $ DNS.encode tcpResponseMessage
+    | otherwise             = do
+        v0 <- async receive
+        v1 <- async $ liftIO $ atomically $ takeAnyTMVar (fromList $ Map.elems responses)
+        va <- waitEitherCatch v0 v1
+        case va of
+            Left  a -> onReceive a
+            Right b -> onResponse b
+    where
+        onReceive (Left (SomeException e)) = do
+            $(logTM) WarningS ("unexpected socket exception: " <> showLS e)
+            pure()
+        onReceive (Right (msg :: Maybe DNS.DNSMessage)) = for_ msg onMessage
+
+        onResponse (Left (SomeException e)) = do
+            $(logTM) WarningS ("unexpected socket exception: " <> showLS e)
+            pure()
+        onResponse (Right resp) = onResponse' resp
+
+        receive = do
+            tt <- view tcpServerEnvTimeout
+            timeout (tt * 10^6) $ liftIO $ DNS.receiveVC sock
+
+        onMessage message = when (DNS.qOrR (DNS.flags $ DNS.header message) == DNS.QR_Query) $ do
+            responseVar  <- liftIO newEmptyTMVarIO
+            liftIO $ atomically $ writeTChan ch (RequestEvent $ RequestTcp $ TcpRequest message responseVar)
+            serveClient sock ch (Map.insert (DNS.identifier . DNS.header $ message) responseVar responses)
+
+        onResponse' TcpResponse {tcpResponseMessage = msg} = do
+            $(logTM) DebugS ("TCP server response: " <> showLS msg)
+            liftIO $ DNS.sendVC sock $ DNS.encode msg
+            serveClient sock ch (Map.delete (DNS.identifier . DNS.header $ msg) responses)
+            
+takeAnyTMVar :: NonEmpty (TMVar a) -> STM a
+takeAnyTMVar = foldr1 orElse . fmap takeTMVar

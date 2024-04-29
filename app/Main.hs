@@ -30,7 +30,6 @@ buildConfig Params{..} = do
             $ setLogFile
             $ setUpstreams
             $ setRefuseAny
-            $ setEnableTcp
             $ setIP 
             $ setPort c
             )
@@ -49,11 +48,11 @@ buildConfig Params{..} = do
 
         setIP           = case listenAddr of
             Nothing     -> id
-            Just  ip    -> configListenAddr .~ ip
+            Just  ip    -> (configServer . serverConfigListenAddr) .~ ip
 
         setPort         = case listenPort of
             Nothing     -> id
-            Just port   -> configListenPort .~ port
+            Just port   -> (configServer . serverConfigListenPort) .~ port
 
         setRefuseAny    = if refuseAny
             then set configRefuseAny refuseAny
@@ -62,10 +61,6 @@ buildConfig Params{..} = do
         setUpstreams    = case length upstreams of
             0           -> id
             _           -> set (configUpstream . upstreamConfigDefaults) [Upstream ip mp | (ip, mp) <- upstreams]
-
-        setEnableTcp    = if enableTcp
-            then set configEnableTCP enableTcp
-            else id
 
 buildEnv :: Params -> IO (Either AppError AppEnv)
 buildEnv vars = do
