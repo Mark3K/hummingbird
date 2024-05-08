@@ -45,6 +45,7 @@ dependencies:
 - async
 - katip
 - psqueues
+- exceptions
 
 ghc-options:
 - -Wall

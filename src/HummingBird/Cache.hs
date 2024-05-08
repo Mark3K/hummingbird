@@ -2,6 +2,7 @@
 {-# LANGUAGE OverloadedStrings  #-}
 {-# LANGUAGE RecordWildCards    #-}
 {-# LANGUAGE TemplateHaskell    #-}
+{-# LANGUAGE TupleSections      #-}
 
 module HummingBird.Cache 
     ( Cache
@@ -25,7 +26,7 @@ module HummingBird.Cache
     , lookupCache
     ) where
 
-import Control.Concurrent.Lifted (fork, threadDelay, ThreadId, killThread)
+import Control.Concurrent.Lifted (fork, threadDelay, ThreadId, killThread, myThreadId)
 import Control.Exception.Lifted (mask_)
 import Control.Lens (makeLenses)
 import Control.Monad (join)
@@ -122,7 +123,7 @@ insertCache msg c@Cache{..} = do
                 Nothing     -> pure ()
                 Just False  -> pure ()
                 Just True   -> do
-                    tid <- liftIO $ readIORef _cacheTid
+                    tid <- atomicModifyIORef' _cacheTid (Nothing,)
                     for_ tid killThread
                     spawn
 
@@ -147,7 +148,10 @@ refreshCache c@Cache {..} = do
             where 
                 f psq (k, p, v) = PSQ.insert k p v psq
 
-        check _ Nothing         = error "merge with no cache"
+        check _ Nothing         = (Nothing, join $ do
+            tid0 <- readIORef _cacheTid
+            tid1 <- myThreadId
+            error ("merge with no cache on thread=" <> show tid1 <> ",cacheTid=" <> show tid0))
         check merge (Just s)   = if PSQ.null s'
             then (Nothing, do writeIORef _cacheTid Nothing; pure Nothing)
             else (Just s', pure $ PSQ.findMin s')

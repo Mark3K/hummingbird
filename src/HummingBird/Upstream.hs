@@ -11,8 +11,8 @@ module HummingBird.Upstream where
 
 import Control.Concurrent.Async (async, waitAnyCancel)
 import Control.Exception (Exception)
-import Control.Lens (makeClassyPrisms, makeClassy, view, (^.), (#))
-import Control.Monad.Error.Class (MonadError (throwError))
+import Control.Lens (makeClassy, view, (^.))
+import Control.Monad.Catch (MonadThrow(..))
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.Reader (MonadReader)
 import Control.Monad.Trans.Control (MonadBaseControl)
@@ -34,7 +34,6 @@ data UpstreamError
     | UpstreamEmptyError        String
     | UpstreamUnknownError      String
     deriving (Show, Eq)
-makeClassyPrisms ''UpstreamError
 
 instance Exception UpstreamError
 
@@ -47,13 +46,13 @@ makeClassy ''UpstreamEnv
 
 type UpstreamProvision c e m = 
     ( MonadIO m
+    , MonadThrow m
     , KatipContext m
     , MonadBaseControl IO m
     , MonadReader c m, HasUpstreamEnv c
-    , MonadError e m, AsUpstreamError e
     )
 
-buildUpstreamEnv :: (MonadIO m) => UpstreamConfig -> m (Either UpstreamError UpstreamEnv)
+buildUpstreamEnv :: (MonadIO m, MonadThrow m) => UpstreamConfig -> m UpstreamEnv
 buildUpstreamEnv config = do
     routers <- liftIO $ newIORef newRouter
     concur  <- liftIO $ newIORef (config ^. upstreamConfigConcurrent)
@@ -63,7 +62,7 @@ buildUpstreamEnv config = do
             (cacheConfig ^. cacheConfigMaxTTL)
             (cacheConfig ^. cacheConfigMinTTL)
         else pure Nothing
-    pure $ Right $ UpstreamEnv routers concur cache
+    pure $ UpstreamEnv routers concur cache
     where
         cacheConfig = config ^. upstreamConfigCache
 
@@ -137,7 +136,7 @@ resolveFromUpstream q = do
     qd      <- qName q
     case findResolvers router qd of
         Nothing -> do
-            throwError $ _UpstreamEmptyError # ("No upstreams found for " <> show qd)
+            throwM $ UpstreamEmptyError ("No upstreams found for " <> show qd)
         Just rs -> do
             $(logTM) DebugS ("Found " <> showLS (length rs) <> " resolvers for " <> showLS qd)
             concur' <- view upstreamConcur
@@ -146,15 +145,15 @@ resolveFromUpstream q = do
             
 qName :: UpstreamProvision c e m => DNSMessage -> m Domain 
 qName DNSMessage {question = qs} = case qs of
-    []      -> throwError $ _UpstreamInvalidQuery # "question is empty"
+    []      -> throwM $ UpstreamInvalidQuery "question is empty"
     [q]     -> pure $ qname q
-    (_:_)   -> throwError $ _UpstreamInvalidQuery # "question is more than 1"
+    (_:_)   -> throwM $ UpstreamInvalidQuery "question is more than 1"
 
 qType :: UpstreamProvision c e m => DNSMessage -> m TYPE
 qType DNSMessage {question = qs} = case qs of
-    []      -> throwError $ _UpstreamInvalidQuery # "question is empty"
+    []      -> throwM $ UpstreamInvalidQuery "question is empty"
     [q]     -> pure $ qtype q
-    (_:_)   -> throwError $ _UpstreamInvalidQuery # "question is more than 1"
+    (_:_)   -> throwM $ UpstreamInvalidQuery "question is more than 1"
 
 seqResolve :: UpstreamProvision c e m => [(Upstream, Resolver)] -> DNSMessage -> m DNSMessage
 seqResolve ((upstream, r):rs) q = do
@@ -164,10 +163,10 @@ seqResolve ((upstream, r):rs) q = do
     rv <- liftIO $ lookupRaw r qd qt
     case rv of
         Left  e -> if null rs
-            then throwError $ _UpstreamDnsError # e
+            then throwM $ UpstreamDnsError e
             else seqResolve rs q
         Right v -> pure v
-seqResolve [] _ = throwError $ _UpstreamEmptyError # "No upstream"
+seqResolve [] _ = throwM $ UpstreamEmptyError "No upstream"
 
 concurResolve :: UpstreamProvision c e m => [(Upstream, Resolver)] -> DNSMessage -> m DNSMessage
 concurResolve rs q = do
@@ -177,6 +176,6 @@ concurResolve rs q = do
     queries <- mapM (\(_, r) -> liftIO $ async $ lookupRaw r qd qt) rs
     (_, rv) <- liftIO $ waitAnyCancel queries
     case rv of
-        Left  e -> throwError $ _UpstreamDnsError # e
+        Left  e -> throwM $ UpstreamDnsError e
         Right v -> pure v
     

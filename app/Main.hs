@@ -6,11 +6,16 @@
 
 module Main (main) where
 
+import Control.Exception (try, throwIO, SomeException)
 import Control.Lens ((.~), set)
+
 import Katip
+
 import Options.Applicative
 
 import HummingBird
+
+import App
 import Params
 
 toVerbosity :: Int -> Verbosity 
@@ -19,12 +24,12 @@ toVerbosity 1 = V1
 toVerbosity 2 = V2
 toVerbosity _ = V3
 
-buildConfig :: Params -> IO (Either AppError Config)
+buildConfig :: Params -> IO Config
 buildConfig Params{..} = do
     ecfg <- maybe (pure $ Right defaultConfig) fromFile configPath
     case ecfg of
-        Left  e -> pure $ Left (AppConfigError e)
-        Right c -> pure $ Right 
+        Left  e -> throwIO $ AppConfigError e
+        Right c -> pure 
             ( setLogLevel
             $ setLogVerbosity
             $ setLogFile
@@ -62,23 +67,15 @@ buildConfig Params{..} = do
             0           -> id
             _           -> set (configUpstream . upstreamConfigDefaults) [Upstream ip mp | (ip, mp) <- upstreams]
 
-buildEnv :: Params -> IO (Either AppError AppEnv)
-buildEnv vars = do
-    cfg' <- buildConfig vars
-    case cfg' of
-        Left e -> pure $ Left e
-        Right cfg -> buildAppEnv cfg
+buildEnv :: Params -> IO (Either SomeException AppEnv)
+buildEnv vars = buildConfig vars >>= try . buildAppEnv
 
 run :: Params -> IO ()
 run vars = do 
     env' <- buildEnv vars
     case env' of
         Left    e -> putStrLn ("error building appenv: " <> show e)
-        Right env -> do
-            rv <- runApp env app
-            case rv of
-                Left  e -> putStrLn ("error run hummingbird: " <> show e)
-                Right _ -> pure ()
+        Right env -> runApp env app
 
 main :: IO ()
 main = run =<< execParser opts

@@ -53,6 +53,7 @@ library
     , bytestring-trie
     , containers
     , dns
+    , exceptions
     , iproute
     , katip
     , lens
@@ -77,6 +78,7 @@ library
 executable hummingbird
   main-is: Main.hs
   other-modules:
+      App
       Params
       Paths_hummingbird
   autogen-modules:
@@ -91,6 +93,7 @@ executable hummingbird
     , bytestring-trie
     , containers
     , dns
+    , exceptions
     , hummingbird
     , iproute
     , katip
@@ -130,6 +133,7 @@ test-suite hummingbird-test
     , bytestring-trie
     , containers
     , dns
+    , exceptions
     , hummingbird
     , iproute
     , katip

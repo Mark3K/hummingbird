@@ -11,13 +11,16 @@ import Control.Exception.Lifted (catch, bracketOnError, SomeException)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.Trans.Control (MonadBaseControl)
 
+import GHC.IO.Exception (IOErrorType(NoSuchThing), IOException (IOError))
+
 import Katip (KatipContext, Severity(..), logTM, showLS)
 
 import Network.Socket 
+import Control.Monad.Catch (MonadThrow (throwM))
 
 openSock 
-    :: (KatipContext m, MonadBaseControl IO m)
-    => SocketType -> HostName -> ServiceName -> m (Either String (Socket, SockAddr))
+    :: (MonadThrow m, KatipContext m, MonadBaseControl IO m) 
+    => SocketType -> HostName -> ServiceName -> m (Socket, SockAddr)
 openSock socktyp host port = do
     addrs <- liftIO $ getAddrInfo (Just hints) (Just host) (Just port)
     $(logTM) DebugS ("TCP available address: " <> showLS addrs)
@@ -29,14 +32,14 @@ openSock socktyp host port = do
             }
 
         tryAddrs = \case
-            []      -> pure $ Left ("Address not available: " <> show (host, port))
+            []      -> throwM $ IOError Nothing NoSuchThing "" ("Address not available: " <> show (host, port)) Nothing Nothing
             [x]     -> useAddr x
             (x:xs)  -> catch (useAddr x) (\(_ :: IOError) -> tryAddrs xs)
         
         useAddr addr = bracketOnError (newSock addr) closeSock $ \sock -> do
             let sockAddr = addrAddress addr
             liftIO (bind sock sockAddr)
-            pure $ Right (sock, sockAddr)
+            pure (sock, sockAddr)
 
 newSock :: MonadIO m => AddrInfo -> m Socket
 newSock AddrInfo{..} = do
